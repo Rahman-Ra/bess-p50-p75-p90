@@ -19,7 +19,11 @@ scenario analysis prepared for review.
 | `run_scenario_experiment.py` | Runs the rule/MILP battery engine on P50, P75 and P90 and compares KPIs. |
 | `run_experiment.py` | Shared experiment harness used by `run_scenario_experiment.py`. |
 | `sample_data/battery_input_annual_p50.csv` | Ready-to-upload annual scenario file. It contains all three scenarios (P50/P75/P90). |
+| `sample_data/battery_input_annual_p75.csv` | Annual P75 dispatch input (`solar_MWh`/`wind_MWh` already set to P75). |
+| `sample_data/battery_input_annual_p90.csv` | Annual P90 dispatch input. |
 | `sample_data/battery_input_hourly_p50.csv` | Ready-to-upload hourly stress-test scenario file. It contains all three scenarios. |
+| `sample_data/battery_input_hourly_p75.csv` | Hourly P75 dispatch input. |
+| `sample_data/battery_input_hourly_p90.csv` | Hourly P90 dispatch input. |
 | `results/scenario_kpis_annual.md` | Annual P50/P75/P90 battery comparison. |
 | `results/scenario_kpis_hourly.md` | Hourly P50/P75/P90 battery comparison. |
 | `results/penalty_scenarios.png` | Penalty chart by scenario. |
@@ -60,10 +64,30 @@ scenario analysis prepared for review.
    ```
 
 7. A new **Generation scenario** selector appears. Choose **P50**, **P75** or
-   **P90**, then click **Run Dispatch**.
+   **P90**, then click **Run BESS dispatch**.
 
 The sample file contains all three scenarios, so the same upload can be run
 three times without uploading another file.
+
+### Reproduce the battery comparison from the command line
+
+The annual and hourly P75/P90 battery inputs are included, so no regeneration is
+needed:
+
+```powershell
+# annual, 2024
+python run_scenario_experiment.py `
+  --inputs sample_data/battery_input_annual_p50.csv,sample_data/battery_input_annual_p75.csv,sample_data/battery_input_annual_p90.csv `
+  --labels P50,P75,P90 --engine rule --outdir dispatch_annual
+
+# hourly stress test
+python run_scenario_experiment.py `
+  --inputs sample_data/battery_input_hourly_p50.csv,sample_data/battery_input_hourly_p75.csv,sample_data/battery_input_hourly_p90.csv `
+  --labels P50,P75,P90 --engine rule --outdir dispatch_hourly
+```
+
+Add `--hours 720` for a one-month check before a full-year run. Use
+`--engine milp` for the rolling-horizon optimiser.
 
 ## How the conversion works
 
@@ -143,7 +167,8 @@ python -m pytest -q test_quantile_scenarios.py
 # 8 passed
 ```
 
-The app also passes the existing 15/15 BESS checks.
+The app compiles and imports cleanly, and the scenario tests above cover the
+calibration, joint allocation and battery-input writer.
 
 ## Notes
 

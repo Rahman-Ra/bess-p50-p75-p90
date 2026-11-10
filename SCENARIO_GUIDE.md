@@ -98,6 +98,11 @@ specific evening peak.
 
 ## 5. Commands
 
+The commands below use the full project's raw forecast files (`oos_out/` and
+`real_input.csv`) and are included for provenance. The package itself ships the
+ready-made P75/P90 battery inputs, so the comparison can be run directly with
+the commands in `README.md` — no regeneration step is required.
+
 ### 5.1 Hourly P-values (operational stress test)
 
 ```powershell

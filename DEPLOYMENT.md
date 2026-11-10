@@ -70,7 +70,7 @@ Share that URL with your sir. Anyone can open it; no login is required.
 - Upload `sample_data/battery_input_annual_p50.csv` (download it from the repo
   first) in the **Upload BESSTOOL_INPUT** box.
 - Choose P50 / P75 / P90 in the **Generation scenario** selector.
-- Click **Run Dispatch**.
+- Click **Run BESS dispatch**.
 
 Streamlit Community Cloud apps sleep after a period of inactivity. The first
 visit after sleeping takes about 30–60 seconds to wake. This is normal on the

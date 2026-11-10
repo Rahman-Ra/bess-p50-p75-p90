@@ -95,15 +95,20 @@ python -m streamlit run bess_app_v4_fixed.py
 
 Then upload `sample_data/battery_input_annual_p50.csv` (or the hourly file) in
 the **Upload BESSTOOL_INPUT** box, choose P50/P75/P90 in the **Generation
-scenario** selector, and click **Run Dispatch**. One upload contains all three
+scenario** selector, and click **Run BESS dispatch**. One upload contains all three
 scenarios, so no second file is needed.
 
-To regenerate the scenarios and the comparison from source:
+To reproduce the battery comparison (the P75/P90 inputs are included):
 
 ```powershell
-python quantile_scenarios.py --mode annual --group month,hour --outdir scenario_annual_10y
-python run_scenario_experiment.py --input-dir scenario_annual_10y --outdir scenario_dispatch_annual_10y --engine rule
+python run_scenario_experiment.py `
+  --inputs sample_data/battery_input_annual_p50.csv,sample_data/battery_input_annual_p75.csv,sample_data/battery_input_annual_p90.csv `
+  --labels P50,P75,P90 --engine rule --outdir dispatch_annual
 ```
+
+To regenerate the scenarios from raw forecast files, use
+`quantile_scenarios.py`; the exact commands for this project are in
+`SCENARIO_GUIDE.md` §5.
 
 ## Files in this package
 
