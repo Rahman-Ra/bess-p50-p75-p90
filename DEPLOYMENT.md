@@ -25,21 +25,25 @@ reproduced.
 Streamlit Community Cloud gives a public `https://<app>.streamlit.app` URL that
 anyone can open. It deploys from a GitHub repository and branch.
 
-### 1. Create the GitHub repository
+### 1. Public GitHub repository (already created)
 
-Create an empty repository, for example `bess-p50-p75-p90`, under your GitHub
-account. Do **not** initialize it with a README.
+The package is already published at:
 
-### 2. Push the `rahman` branch
+```text
+https://github.com/Rahman-Ra/bess-p50-p75-p90
+```
+
+The default branch is `rahman` (not `main`), and it contains
+`bess_app_v4_fixed.py` at the repository root.
+
+### 2. Push updates to the `rahman` branch
 
 From this package folder:
 
 ```powershell
-git init -b rahman
-git add .
-git commit -m "BESS P50/P75/P90 scenario package"
-git remote add origin https://github.com/<your-account>/bess-p50-p75-p90.git
-git push -u origin rahman
+git add -A
+git commit -m "describe the change"
+git push origin rahman
 ```
 
 The branch name is `rahman`, not `main`.
@@ -50,12 +54,17 @@ repository access to the new repo, Contents: Read and write).
 
 ### 3. Deploy
 
-1. Go to <https://share.streamlit.io> and sign in with GitHub.
+1. Go to <https://share.streamlit.io> and sign in with GitHub (the account that
+   owns the repository).
 2. Click **Create app** → **Deploy a public app from GitHub**.
-3. Repository: `<your-account>/bess-p50-p75-p90`
+3. Repository: `Rahman-Ra/bess-p50-p75-p90`
 4. Branch: `rahman`
 5. Main file path: `bess_app_v4_fixed.py`
-6. Click **Deploy**.
+6. Optionally set the app URL subdomain, e.g. `bess-p50-p75-p90`.
+7. Click **Deploy**.
+
+Signing in is the only manual step: Streamlit Cloud requires the repository
+owner's GitHub session, so it cannot be completed from a script or token.
 
 The first build takes a few minutes. The resulting URL looks like:
 
