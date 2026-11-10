@@ -138,6 +138,13 @@ wind_P_L  = total_P_L - solar_P_L
 This avoids adding solar-P90 and wind-P90, which would double-count
 uncertainty.
 
+**Column naming in joint mode:** the columns `solar_p75_MWh` / `wind_p75_MWh`
+(and the P90 versions) are **allocated shares** of the joint solar+wind
+scenario, not standalone resource P75/P90 values. The scenario level is
+`total_p75_MWh` / `total_p90_MWh`, and that total is what the shared battery
+sees. The separate solar and wind factors in the calibration table are for
+reference and for the `--aggregation individual` case only.
+
 ## Results (rule engine, 2024)
 
 | Case | Penalty (MWh) | Supplied (MWh) |
@@ -164,7 +171,7 @@ Use **hourly P90** for operational stress testing and hour-by-hour reliability.
 
 ```text
 python -m pytest -q test_quantile_scenarios.py
-# 8 passed
+# 10 passed
 ```
 
 The app compiles and imports cleanly, and the scenario tests above cover the

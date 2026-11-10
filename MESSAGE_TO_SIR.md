@@ -51,7 +51,7 @@ Design choices that make the numbers defensible:
 **3. The method and implementation are documented and tested.**
 
 `SCENARIO_GUIDE.md` contains the formulas, exact commands, fitted factors,
-results and caveats. `test_quantile_scenarios.py` contains 8 regression tests
+results and caveats. `test_quantile_scenarios.py` contains 10 regression tests
 covering coverage targets, the fixed-haircut failure, monotonicity,
 non-negativity, group calibration, annual factors, joint allocation, file writing
 and the CLI. All 8 pass.
@@ -142,7 +142,7 @@ To regenerate the scenarios from raw forecast files, use
 > factors (for bankability). P90 is treated correctly as 90% probability of
 > exceedance, so P90 <= P75 <= P50. The Streamlit app now has a P50/P75/P90
 > selector, and the package includes sample inputs, KPI results, the fitted
-> calibration and a full method guide. All 8 scenario tests pass. The main
+> calibration and a full method guide. All 10 scenario tests pass. The main
 > results are: annual P90 penalty 52,457.8 MWh vs P50 45,140.5 MWh; hourly P90
 > penalty 136,813.6 MWh vs P50 45,140.5 MWh. I have attached the package and the
 > guide; happy to walk through the method.

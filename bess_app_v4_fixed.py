@@ -3254,10 +3254,20 @@ def main():
             )
         return
 
-    if uploaded.name.lower().endswith(".csv"):
-        df_in = pd.read_csv(uploaded)
-    else:
-        df_in = pd.read_excel(uploaded)
+    try:
+        if uploaded.name.lower().endswith(".csv"):
+            df_in = pd.read_csv(uploaded)
+        else:
+            df_in = pd.read_excel(uploaded)
+    except Exception as exc:
+        st.error("**Could not read the uploaded file.**")
+        st.caption(f"{type(exc).__name__}: {exc}")
+        st.info(
+            "Upload a non-empty CSV or XLSX file with the columns "
+            "`Year, Day, Month, Hour, solar_MWh, wind_MWh`. "
+            "Nothing was simulated."
+        )
+        return
 
     # FIX 4 - validate before anything downstream touches the frame.
     df_in, input_errors, input_warnings = validate_input_frame(df_in)
@@ -3301,7 +3311,7 @@ def main():
 
     st.subheader("Input data preview")
     preview = df_in.head(24)
-    numeric_cols = preview.select_dtypes(include="number").columns.tolist()
+    numeric_cols = preview.select_dtypes(include="float").columns.tolist()
     st.dataframe(
         preview.style.format("{:.2f}", na_rep="-", subset=numeric_cols)
     )
@@ -3655,32 +3665,32 @@ def main():
             _h = hourly.head(48)
             st.dataframe(
                 _h.style.format("{:.2f}", na_rep="-",
-                                subset=_h.select_dtypes(include="number").columns.tolist())
+                                subset=_h.select_dtypes(include="float").columns.tolist())
             )
 
             st.subheader("Daily penalty summary")
             _d = daily.head(20)
             st.dataframe(
                 _d.style.format("{:.2f}", na_rep="-",
-                                subset=_d.select_dtypes(include="number").columns.tolist())
+                                subset=_d.select_dtypes(include="float").columns.tolist())
             )
 
             st.subheader("Monthly generation summary")
             st.dataframe(
                 monthly_gen.style.format("{:.2f}", na_rep="-",
-                                         subset=monthly_gen.select_dtypes(include="number").columns.tolist())
+                                         subset=monthly_gen.select_dtypes(include="float").columns.tolist())
             )
 
             st.subheader("Monthly penalty summary")
             st.dataframe(
                 monthly_pen.style.format("{:.2f}", na_rep="-",
-                                         subset=monthly_pen.select_dtypes(include="number").columns.tolist())
+                                         subset=monthly_pen.select_dtypes(include="float").columns.tolist())
             )
 
             st.subheader("Yearly summary")
             st.dataframe(
                 yearly.style.format("{:.2f}", na_rep="-",
-                                    subset=yearly.select_dtypes(include="number").columns.tolist())
+                                    subset=yearly.select_dtypes(include="float").columns.tolist())
             )
 
             out_buf = io.BytesIO()

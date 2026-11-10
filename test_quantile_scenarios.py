@@ -152,6 +152,74 @@ def test_write_battery_inputs_replaces_only_scenario_window(tmp_path):
     assert p90["wind_MWh"].tolist() == [2.0, 16.0, 16.0, 16.0, 16.0, 2.0]
 
 
+def test_write_battery_inputs_drops_stale_scenario_columns(tmp_path):
+    times = pd.date_range("2024-01-01", periods=4, freq="h")
+    base = pd.DataFrame({
+        "Year": times.year, "Month": times.month, "Day": times.day,
+        "Hour": times.hour,
+        "solar_MWh": [999.0] * 4, "wind_MWh": [999.0] * 4,
+        "solar_p75_MWh": [999.0] * 4, "wind_p75_MWh": [999.0] * 4,
+    })
+    base_path = tmp_path / "base_with_scenarios.csv"
+    base.to_csv(base_path, index=False)
+
+    scen = pd.DataFrame({
+        "time": times,
+        "solar_p50_MWh": [10.0] * 4, "solar_p75_MWh": [9.0] * 4,
+        "solar_p90_MWh": [8.0] * 4,
+        "wind_p50_MWh": [20.0] * 4, "wind_p75_MWh": [18.0] * 4,
+        "wind_p90_MWh": [16.0] * 4,
+    })
+    written = qs.write_battery_inputs(
+        base_path, scen, tmp_path, levels=(50, 75, 90), apply_year=None,
+    )
+    p75 = pd.read_csv(written[1])
+    assert p75["solar_MWh"].tolist() == [9.0] * 4
+    assert p75["wind_MWh"].tolist() == [18.0] * 4
+
+
+def test_joint_summary_scores_written_columns(tmp_path):
+    time = pd.date_range("2022-01-01", periods=600, freq="h")
+    rng = np.random.default_rng(13)
+    solar_p50 = rng.uniform(0.0, 50.0, len(time))
+    wind_p50 = rng.uniform(0.0, 50.0, len(time))
+    solar = pd.DataFrame({
+        "time": time,
+        "actual": np.maximum(0.0, solar_p50 + rng.normal(0, 7, len(time))),
+        "pred": solar_p50,
+    })
+    wind = pd.DataFrame({
+        "time": time,
+        "actual": np.maximum(0.0, wind_p50 + rng.normal(0, 7, len(time))),
+        "pred": wind_p50,
+    })
+    solar_path = tmp_path / "solar.csv"
+    wind_path = tmp_path / "wind.csv"
+    solar.to_csv(solar_path, index=False)
+    wind.to_csv(wind_path, index=False)
+    out = tmp_path / "out"
+    rc = qs.main([
+        "--solar-pred", str(solar_path), "--wind-pred", str(wind_path),
+        "--train-years", "2022", "--test-years", "2022",
+        "--group", "hour", "--min-samples", "5",
+        "--aggregation", "joint", "--outdir", str(out),
+    ])
+    assert rc == 0
+    hourly = pd.read_csv(out / "scenario_hourly.csv")
+    summary = pd.read_csv(out / "scenario_summary.csv")
+    for target, actual_col in (
+        ("solar", "solar_actual_MWh"), ("wind", "wind_actual_MWh")
+    ):
+        row = summary[
+            (summary["target"] == f"{target}_MWh")
+            & (summary["level"] == "P90")
+        ].iloc[0]
+        expected = float(
+            (hourly[actual_col] >= hourly[f"{target}_p90_MWh"]).mean()
+        )
+        assert row["coverage_actual_ge_scenario"] == pytest.approx(expected)
+
+
 def test_cli_writes_expected_artifacts(tmp_path):
     time, actual, p50 = _normal_sample(n=4_000, seed=21)
     solar = pd.DataFrame({"time": time, "actual": actual, "pred": p50})

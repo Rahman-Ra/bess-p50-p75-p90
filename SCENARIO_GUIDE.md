@@ -152,6 +152,19 @@ python run_scenario_experiment.py `
 Use `--engine milp` for the rolling-horizon optimiser. Start with `--hours 720`
 if you want a one-month check before running a full year.
 
+**Reproducing the shipped numbers.** `scenario_hourly_raw/` is the uncalibrated
+P50 variant (`calibrate_p50: false`); the §5.1 command uses `--calibrate-p50`
+and therefore changes the P50 case. The P75/P90 columns are identical. For the
+documented KPI table, use the battery inputs in `sample_data/`, which are the
+exact files that produced `results/scenario_kpis_annual.md` and
+`results/scenario_kpis_hourly.md`.
+
+**Joint-mode column names.** With `--aggregation joint`, `solar_pXX_MWh` and
+`wind_pXX_MWh` are proportional allocations of the joint solar+wind scenario.
+They are not standalone resource PXX values; the scenario level is
+`total_pXX_MWh`. The summary scores these exact allocated columns, so its
+coverage matches the battery inputs.
+
 ## 6. Using the Streamlit app
 
 Upload any `battery_input_p*.csv` file. If the file contains
@@ -190,7 +203,7 @@ capacities, contract and battery.
 import pandas as pd
 import quantile_scenarios as qs
 
-train = pd.read_csv("solar_train.csv")   # columns: time, actual, pred
+train = pd.read_csv("solar_train.csv", parse_dates=["time"])   # time, actual, pred
 cal = qs.fit_exceedance_calibration(
     train["actual"], train["pred"],
     levels=(50, 75, 90), group_cols=("month", "hour"),
@@ -198,7 +211,7 @@ cal = qs.fit_exceedance_calibration(
     month=train["time"].dt.month, hour=train["time"].dt.hour,
 )
 
-test = pd.read_csv("solar_test.csv")
+test = pd.read_csv("solar_test.csv", parse_dates=["time"])
 scen = cal.scenario(
     test["pred"],
     month=test["time"].dt.month, hour=test["time"].dt.hour,

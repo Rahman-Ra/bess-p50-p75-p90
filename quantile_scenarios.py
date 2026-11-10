@@ -80,6 +80,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -297,11 +298,16 @@ class AnnualFactorCalibration:
         out: Dict[int, np.ndarray] = {}
         for level in levels:
             out[int(level)] = np.clip(p50 * float(self.factors[int(level)]), 0.0, None)
-        # Factors are monotone by construction, but enforce it after clipping so
-        # a hand-edited factor file cannot produce P90 > P75.
+        # Factors are monotone by construction, but enforce the correct
+        # direction after clipping so a hand-edited factor file cannot produce
+        # P90 > P75 on a lower-side case (or P90 < P75 on an upper-side case).
         ordered = sorted(out)
-        for previous, current in zip(ordered, ordered[1:]):
-            out[current] = np.minimum(out[current], out[previous])
+        if self.side == "upper":
+            for previous, current in zip(ordered, ordered[1:]):
+                out[current] = np.maximum(out[current], out[previous])
+        else:
+            for previous, current in zip(ordered, ordered[1:]):
+                out[current] = np.minimum(out[current], out[previous])
         return out
 
     def to_dict(self) -> Dict[str, Any]:
@@ -634,6 +640,15 @@ def write_battery_inputs(
     base = pd.read_csv(base_input) if str(base_input).lower().endswith(".csv") \
         else pd.read_excel(base_input)
     base = base.copy()
+    # Drop any pre-existing scenario columns and the merge key before joining.
+    # Otherwise pandas suffixes the freshly computed columns with "_scen" and
+    # the writer silently keeps the old P-values from the base file.
+    base = base.drop(columns=["time"], errors="ignore")
+    stale = [
+        column for column in base.columns
+        if re.match(r"^(?:solar|wind|total)_p\d+_MWh$", str(column))
+    ]
+    base = base.drop(columns=stale, errors="ignore")
     base["_time"] = _base_time(base)
     if base["_time"].isna().any():
         raise ValueError("base input contains invalid timestamps")
@@ -959,17 +974,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         dayofyear=solar_eval["dayofyear"].to_numpy(),
         weekday=solar_eval["weekday"].to_numpy(), levels=levels,
     )
-    rows += score_scenarios(solar_eval["actual"], solar_scen, "solar_MWh")
-
-    if wind is not None and wind_cal is not None:
-        wind_eval = wind_test if test_years is not None else wind
-        wind_scen = wind_cal.scenario(
-            wind_eval["p50"].to_numpy(), month=wind_eval["month"].to_numpy(),
-            hour=wind_eval["hour"].to_numpy(),
-            dayofyear=wind_eval["dayofyear"].to_numpy(),
-            weekday=wind_eval["weekday"].to_numpy(), levels=levels,
-        )
-        rows += score_scenarios(wind_eval["actual"], wind_scen, "wind_MWh")
 
     # Build the full hourly scenario frame over the evaluation window.
     if wind is not None and wind_cal is not None:
@@ -979,12 +983,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             solar_for_frame, wind_for_frame, solar_cal, wind_cal, joint_cal,
             levels=levels, aggregation=args.aggregation,
         )
-        for level in levels:
-            rows += score_scenarios(
-                hourly["total_actual_MWh"],
-                {int(level): hourly[f"total_p{level}_MWh"].to_numpy()},
-                "solar+wind_MWh",
-            )
     else:
         hourly = pd.DataFrame({
             "time": solar_eval["time"].to_numpy(),
@@ -999,6 +997,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             hourly[f"solar_p{level}_MWh"] = solar_scen[int(level)]
             hourly[f"wind_p{level}_MWh"] = 0.0
             hourly[f"total_p{level}_MWh"] = solar_scen[int(level)]
+
+    # Score the exact columns written to scenario_hourly.csv and the battery
+    # inputs.  In joint mode solar_pXX/wind_pXX are allocated shares of the
+    # joint solar+wind total, so scoring the standalone calibrations here would
+    # report coverage for columns that are not the ones actually dispatched.
+    score_targets = [("solar", "solar_actual_MWh")]
+    if wind is not None and wind_cal is not None:
+        score_targets.append(("wind", "wind_actual_MWh"))
+    for target, actual_col in score_targets:
+        target_scenarios = {
+            int(level): hourly[f"{target}_p{level}_MWh"].to_numpy()
+            for level in levels
+            if f"{target}_p{level}_MWh" in hourly.columns
+        }
+        if target_scenarios:
+            rows += score_scenarios(
+                hourly[actual_col], target_scenarios, f"{target}_MWh"
+            )
+    rows += score_scenarios(
+        hourly["total_actual_MWh"],
+        {int(level): hourly[f"total_p{level}_MWh"].to_numpy() for level in levels},
+        "solar+wind_MWh",
+    )
 
     summary = pd.DataFrame(rows)
     summary.to_csv(outdir / "scenario_summary.csv", index=False)
