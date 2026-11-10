@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, shrink-to-fit=no"
+    />
+    <title>Hybrid BESS Dispatch Tool - P50 / P75 / P90</title>
+    <meta
+      name="description"
+      content="Wind-solar BESS dispatch with P50, P75 and P90 generation scenarios. Runs entirely in your browser."
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@stlite/browser@0.85.1/build/stlite.css"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      import { mount } from "https://cdn.jsdelivr.net/npm/@stlite/browser@0.85.1/build/stlite.js";
+
+      mount(
+        {
+          entrypoint: "bess_app_v4_fixed.py",
+          files: {
+            "bess_app_v4_fixed.py": { url: "./bess_app_v4_fixed.py" },
+          },
+          // PuLP/HiGHS are deliberately not installed: their native solvers
+          // cannot run in the browser. The app falls back to the rule-based
+          // engine, which is the engine used for the published P50/P75/P90
+          // results.
+          requirements: ["pandas", "numpy", "openpyxl", "xlsxwriter"],
+          streamlitConfig: {
+            "theme.base": "light",
+            "theme.primaryColor": "#1f6feb",
+            "browser.gatherUsageStats": false,
+          },
+        },
+        document.getElementById("root"),
+      );
+    </script>
+  </body>
+</html>
