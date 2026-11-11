@@ -1,5 +1,12 @@
 # Message to Sir
 
+## Live app
+
+**https://rahman-ra.github.io/bess-p50-p75-p90/**
+
+Public, no login, and independent of your laptop. First load takes a few minutes
+while the browser downloads Python; later loads are cached.
+
 ## What you asked
 
 > Take the P50 wind forecast and the P50 solar forecast and feed them into the

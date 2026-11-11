@@ -3,6 +3,18 @@
 This package contains the updated BESS dispatch app and the P50 → P75/P90
 scenario analysis prepared for review.
 
+## Live app (public, no login)
+
+**https://rahman-ra.github.io/bess-p50-p75-p90/**
+
+Anyone can open this link; it does not depend on your laptop. It runs the
+Streamlit UI in the browser through GitHub Pages and Stlite. The first visit
+takes a few minutes while Python and the libraries download; later visits are
+cached. This build uses the **rule-based engine** (the engine behind the
+published results) and keeps the result tables on screen; the Excel download is
+disabled in the browser build. The full Streamlit Cloud deployment adds the MILP
+engine and Excel download.
+
 ## What was requested
 
 1. Take the **P50 wind forecast** and **P50 solar forecast** and feed them into

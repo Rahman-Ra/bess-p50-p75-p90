@@ -20,7 +20,32 @@ sample_data/battery_input_hourly_p50.csv
 the docs are not needed at runtime but are included so the method can be
 reproduced.
 
-## Option A — Streamlit Community Cloud (free, recommended)
+## Permanent no-login link (already live)
+
+**https://rahman-ra.github.io/bess-p50-p75-p90/**
+
+This is served by GitHub Pages from `index.html` in the repository root. The
+page loads the same `bess_app_v4_fixed.py` through
+[Stlite](https://github.com/whitphx/stlite), which runs Streamlit and Python in
+the visitor's browser using WebAssembly. It needs no server, no login and no
+laptop, so the link stays up as long as the repository and GitHub Pages exist.
+
+Notes for this build:
+
+- The first visit takes a few minutes while Pyodide, Streamlit, pandas and numpy
+  download. Later visits use the browser cache.
+- It uses the **rule-based engine**; the MILP solver is a native binary and
+  cannot run in the browser.
+- The Excel download is disabled in the browser build. All result tables are
+  displayed on screen.
+- `index.html` fetches `./bess_app_v4_fixed.py`, so both files must stay at the
+  repository root on the `rahman` branch.
+
+GitHub Pages is enabled for the `rahman` branch, repository root. If it ever
+needs to be re-enabled, use **Settings → Pages → Source: Deploy from a branch →
+`rahman` / (root)**.
+
+## Option A — Streamlit Community Cloud (full server build, recommended for MILP)
 
 Streamlit Community Cloud gives a public `https://<app>.streamlit.app` URL that
 anyone can open. It deploys from a GitHub repository and branch.
