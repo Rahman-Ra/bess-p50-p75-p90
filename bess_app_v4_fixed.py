@@ -3,6 +3,7 @@
 # -----------------------------
 import io
 import json
+import sys
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -3737,15 +3738,21 @@ def main():
             if not safe_project:
                 safe_project = "Project"
 
-            st.download_button(
-                label="Download results as Excel",
-                data=out_buf,
-                file_name=f"{safe_project}_bess_results.xlsx",
-                mime=(
-                    "application/vnd.openxmlformats-"
-                    "officedocument.spreadsheetml.sheet"
-                ),
-            )
+            if sys.platform == "emscripten":
+                st.caption(
+                    "Excel download is disabled in the in-browser build. "
+                    "All result tables are shown above."
+                )
+            else:
+                st.download_button(
+                    label="Download results as Excel",
+                    data=out_buf,
+                    file_name=f"{safe_project}_bess_results.xlsx",
+                    mime=(
+                        "application/vnd.openxmlformats-"
+                        "officedocument.spreadsheetml.sheet"
+                    ),
+                )
             
  
         except Exception as e:
