@@ -61,7 +61,7 @@ Design choices that make the numbers defensible:
 results and caveats. `test_quantile_scenarios.py` contains 10 regression tests
 covering coverage targets, the fixed-haircut failure, monotonicity,
 non-negativity, group calibration, annual factors, joint allocation, file writing
-and the CLI. All 8 pass.
+and the CLI. All 10 pass.
 
 **4. The app now has a P50/P75/P90 selector.**
 
