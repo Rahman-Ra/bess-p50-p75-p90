@@ -1,15 +1,15 @@
-# Deploying the Streamlit UI (public link)
+﻿# Deploying the Streamlit UI (public link)
 
 The app is a normal Streamlit app. The entry point is:
 
 ```text
-bess_app_v4_fixed.py
+bess_app_v5.py
 ```
 
 The repository must contain at least:
 
 ```text
-bess_app_v4_fixed.py
+bess_app_v5.py
 requirements.txt
 .streamlit/config.toml
 sample_data/battery_input_annual_p50.csv
@@ -25,7 +25,7 @@ reproduced.
 **https://rahman-ra.github.io/bess-p50-p75-p90/**
 
 This is served by GitHub Pages from `index.html` in the repository root. The
-page loads the same `bess_app_v4_fixed.py` through
+page loads the same `bess_app_v5.py` through
 [Stlite](https://github.com/whitphx/stlite), which runs Streamlit and Python in
 the visitor's browser using WebAssembly. It needs no server, no login and no
 laptop, so the link stays up as long as the repository and GitHub Pages exist.
@@ -38,14 +38,14 @@ Notes for this build:
   cannot run in the browser.
 - The Excel download is disabled in the browser build. All result tables are
   displayed on screen.
-- `index.html` fetches `./bess_app_v4_fixed.py`, so both files must stay at the
+- `index.html` fetches `./bess_app_v5.py`, so both files must stay at the
   repository root on the `rahman` branch.
 
 GitHub Pages is enabled for the `rahman` branch, repository root. If it ever
-needs to be re-enabled, use **Settings → Pages → Source: Deploy from a branch →
+needs to be re-enabled, use **Settings â†’ Pages â†’ Source: Deploy from a branch â†’
 `rahman` / (root)**.
 
-## Option A — Streamlit Community Cloud (full server build, recommended for MILP)
+## Option A â€” Streamlit Community Cloud (full server build, recommended for MILP)
 
 Streamlit Community Cloud gives a public `https://<app>.streamlit.app` URL that
 anyone can open. It deploys from a GitHub repository and branch.
@@ -59,7 +59,7 @@ https://github.com/Rahman-Ra/bess-p50-p75-p90
 ```
 
 The default branch is `rahman` (not `main`), and it contains
-`bess_app_v4_fixed.py` at the repository root.
+`bess_app_v5.py` at the repository root.
 
 ### 2. Push updates to the `rahman` branch
 
@@ -74,17 +74,17 @@ git push origin rahman
 The branch name is `rahman`, not `main`.
 
 If git asks for credentials, use a GitHub Personal Access Token as the password
-(Settings → Developer settings → Personal access tokens → Fine-grained tokens →
+(Settings â†’ Developer settings â†’ Personal access tokens â†’ Fine-grained tokens â†’
 repository access to the new repo, Contents: Read and write).
 
 ### 3. Deploy
 
 1. Go to <https://share.streamlit.io> and sign in with GitHub (the account that
    owns the repository).
-2. Click **Create app** → **Deploy a public app from GitHub**.
+2. Click **Create app** â†’ **Deploy a public app from GitHub**.
 3. Repository: `Rahman-Ra/bess-p50-p75-p90`
 4. Branch: `rahman`
-5. Main file path: `bess_app_v4_fixed.py`
+5. Main file path: `bess_app_v5.py`
 6. Optionally set the app URL subdomain, e.g. `bess-p50-p75-p90`.
 7. Click **Deploy**.
 
@@ -107,25 +107,25 @@ Share that URL with your sir. Anyone can open it; no login is required.
 - Click **Run BESS dispatch**.
 
 Streamlit Community Cloud apps sleep after a period of inactivity. The first
-visit after sleeping takes about 30–60 seconds to wake. This is normal on the
+visit after sleeping takes about 30â€“60 seconds to wake. This is normal on the
 free tier.
 
-## Option B — Hugging Face Spaces (free alternative)
+## Option B â€” Hugging Face Spaces (free alternative)
 
-1. Create a new Space → SDK: **Streamlit**.
+1. Create a new Space â†’ SDK: **Streamlit**.
 2. Upload the files from this package to the Space repository.
-3. Set the entry point to `bess_app_v4_fixed.py` (Space settings → App file).
+3. Set the entry point to `bess_app_v5.py` (Space settings â†’ App file).
 4. The Space gives a public `https://<user>-<space>.hf.space` URL.
 
 Hugging Face Spaces does not require a Streamlit Cloud account.
 
-## Option C — Temporary tunnel from this computer
+## Option C â€” Temporary tunnel from this computer
 
 If you only need a link for a short demo and cannot push to GitHub:
 
 ```powershell
 # terminal 1
-python -m streamlit run bess_app_v4_fixed.py --server.port 8501
+python -m streamlit run bess_app_v5.py --server.port 8501
 
 # terminal 2 (if cloudflared is installed)
 cloudflared tunnel --url http://localhost:8501
@@ -137,27 +137,27 @@ this is only suitable for a live demo.
 
 ## Troubleshooting
 
-**`Port 8501 is already in use`** — run on another port:
+**`Port 8501 is already in use`** â€” run on another port:
 
 ```powershell
-python -m streamlit run bess_app_v4_fixed.py --server.port 8502
+python -m streamlit run bess_app_v5.py --server.port 8502
 ```
 
-**The scenario selector does not appear** — the uploaded file has no
+**The scenario selector does not appear** â€” the uploaded file has no
 `solar_p75_MWh` / `wind_p75_MWh` columns. Upload one of the files in
 `sample_data/`; both already contain all three scenarios.
 
-**`ModuleNotFoundError`** — install the pinned dependencies:
+**`ModuleNotFoundError`** â€” install the pinned dependencies:
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-**The app builds but crashes on upload** — confirm the file has the columns
+**The app builds but crashes on upload** â€” confirm the file has the columns
 `Year, Day, Month, Hour, solar_MWh, wind_MWh`. The app also accepts the scenario
 columns `solar_p50_MWh`, `solar_p75_MWh`, `solar_p90_MWh` and the matching wind
 columns.
 
-**Streamlit Cloud cannot find the app** — the main file path must be exactly
-`bess_app_v4_fixed.py`, and the selected branch must contain that file at the
+**Streamlit Cloud cannot find the app** â€” the main file path must be exactly
+`bess_app_v5.py`, and the selected branch must contain that file at the
 repository root.

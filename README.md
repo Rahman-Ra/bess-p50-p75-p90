@@ -26,8 +26,9 @@ engine and Excel download.
 
 | File | Purpose |
 |---|---|
-| `bess_app_v4_fixed.py` | Streamlit BESS app with a **Generation scenario** selector (P50 / P75 / P90). |
-| `quantile_scenarios.py` | Fits and applies the P50 → P75/P90 conversion; writes battery-ready input files. |
+| `bess_app_v5.py` | **Use this one.** Single file: Streamlit BESS app with a P50 / P75 / P90 selector **and** the fitted calibration embedded, so a plain P50 upload is converted to P75/P90 inside the app. Needs only `streamlit`, `pandas`, `numpy`, `openpyxl`, `xlsxwriter`. |
+| `bess_app_v4_fixed.py` | Same app without the embedded calibration: reads P75/P90 columns that already exist in the uploaded file. |
+| `quantile_scenarios.py` | Fits and applies the P50 → P75/P90 conversion; writes battery-ready input files. Use it to refit the calibration on new data. |
 | `run_scenario_experiment.py` | Runs the rule/MILP battery engine on P50, P75 and P90 and compares KPIs. |
 | `run_experiment.py` | Shared experiment harness used by `run_scenario_experiment.py`. |
 | `sample_data/battery_input_annual_p50.csv` | Ready-to-upload annual scenario file. It contains all three scenarios (P50/P75/P90). |
@@ -156,6 +157,27 @@ scenario, not standalone resource P75/P90 values. The scenario level is
 `total_p75_MWh` / `total_p90_MWh`, and that total is what the shared battery
 sees. The separate solar and wind factors in the calibration table are for
 reference and for the `--aggregation individual` case only.
+
+## Single-file app (`bess_app_v5.py`)
+
+Drop it anywhere, install `streamlit pandas numpy openpyxl xlsxwriter`, then:
+
+```text
+streamlit run bess_app_v5.py
+```
+
+Upload a plain `BESSTOOL_INPUT` file — only `solar_MWh` and `wind_MWh` are
+required. When the file carries no pre-built scenario columns, the sidebar adds:
+
+- **Scenario conversion** — *Annual factor (bankability)* or *Hourly residual
+  (stress test)*;
+- **Generation scenario** — P50 / P75 / P90.
+
+The fitted calibration is embedded (288 month × hour groups, joint solar+wind),
+so no second file is needed. Checked against the shipped scenario files: the
+generated P75/P90 columns reproduce `sample_data/battery_input_annual_p75.csv`,
+`_p90.csv`, `battery_input_hourly_p75.csv` and `_p90.csv` to 3 × 10⁻¹⁴
+(floating-point round-off), with `P90 ≤ P75 ≤ P50` in every hour.
 
 ## Results (rule engine, 2024)
 

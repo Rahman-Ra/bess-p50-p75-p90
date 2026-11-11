@@ -63,12 +63,23 @@ covering coverage targets, the fixed-haircut failure, monotonicity,
 non-negativity, group calibration, annual factors, joint allocation, file writing
 and the CLI. All 10 pass.
 
-**4. The app now has a P50/P75/P90 selector.**
+**4. The app now has a P50/P75/P90 selector, and one file does the conversion.**
 
-`bess_app_v4_fixed.py` detects scenario columns in the uploaded file and shows a
-**Generation scenario** selector in the sidebar. Choosing a scenario replaces
-`solar_MWh`/`wind_MWh` with that scenario's values and runs the normal dispatch.
-Files without scenario columns behave exactly as before.
+`bess_app_v5.py` is self-contained. It carries the fitted calibration inside the
+file (288 month × hour groups plus the annual factors), so you can upload a
+plain P50 `BESSTOOL_INPUT` — only `solar_MWh` and `wind_MWh` are needed — and the
+sidebar offers a **Scenario conversion** choice (*Annual factor* or *Hourly
+residual*) plus the **Generation scenario** selector (P50 / P75 / P90). Choosing
+a scenario replaces `solar_MWh`/`wind_MWh` with that scenario's values and runs
+the normal dispatch.
+
+`bess_app_v4_fixed.py` is the same app without the embedded calibration: it only
+reads P75/P90 columns that already exist in the uploaded file. Either way, files
+without scenario columns behave exactly as before.
+
+The embedded conversion was checked against the shipped scenario files: it
+reproduces `battery_input_annual_p75.csv`, `_p90.csv`, `battery_input_hourly_p75.csv`
+and `_p90.csv` to 3 × 10⁻¹⁴, with `P90 ≤ P75 ≤ P50` in every hour.
 
 ## Results (rule engine, 2024)
 
@@ -97,7 +108,7 @@ operational stress test, not a replacement for the annual bankable case.
 
 ```powershell
 pip install -r requirements.txt
-python -m streamlit run bess_app_v4_fixed.py
+python -m streamlit run bess_app_v5.py
 ```
 
 Then upload `sample_data/battery_input_annual_p50.csv` (or the hourly file) in
@@ -121,7 +132,8 @@ To regenerate the scenarios from raw forecast files, use
 
 | File | Purpose |
 |---|---|
-| `bess_app_v4_fixed.py` | Streamlit app with the P50/P75/P90 selector |
+| `bess_app_v5.py` | Single-file app: P50/P75/P90 selector with the calibration embedded |
+| `bess_app_v4_fixed.py` | Same app, reads pre-built P75/P90 columns from the upload |
 | `quantile_scenarios.py` | P50 → P75/P90 calibration and battery-input writer |
 | `run_scenario_experiment.py` | Runs the battery engine on all three scenarios |
 | `run_experiment.py` | Shared experiment harness |

@@ -24,9 +24,9 @@
 
       mount(
         {
-          entrypoint: "bess_app_v4_fixed.py",
+          entrypoint: "bess_app_v5.py",
           files: {
-            "bess_app_v4_fixed.py": { url: "./bess_app_v4_fixed.py" },
+            "bess_app_v5.py": { url: "./bess_app_v5.py" },
           },
           // PuLP/HiGHS are deliberately not installed: their native solvers
           // cannot run in the browser. The app falls back to the rule-based
