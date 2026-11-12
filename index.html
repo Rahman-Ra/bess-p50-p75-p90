@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -24,9 +24,9 @@
 
       mount(
         {
-          entrypoint: "bess_app_v5.py",
+          entrypoint: "bess_app_v6.py",
           files: {
-            "bess_app_v5.py": { url: "./bess_app_v5.py" },
+            "bess_app_v6.py": { url: "./bess_app_v6.py" },
           },
           // PuLP/HiGHS are deliberately not installed: their native solvers
           // cannot run in the browser. The app falls back to the rule-based
@@ -44,3 +44,4 @@
     </script>
   </body>
 </html>
+

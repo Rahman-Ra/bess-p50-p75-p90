@@ -7,8 +7,12 @@ report how the battery KPIs move.
 This is the bridge between ``quantile_scenarios.py`` and the dispatch model:
 each scenario is a full BESSTOOL input file with ``solar_MWh`` and ``wind_MWh``
 replaced by one probability-of-exceedance case.  The physics, constraints and
-KPI definitions are exactly those of ``bess_app_v4_fixed.py`` -- this script
-does not re-implement the battery.
+KPI definitions are exactly those of ``bess_app_v6.py`` -- this script does not
+re-implement the battery.
+
+By default the MILP runs in causal mode (seasonal-naive forecast, true receding
+horizon). Pass ``--forecast-mode oracle`` to reproduce the perfect-foresight
+benchmark instead.
 
 Usage
 -----
@@ -48,6 +52,7 @@ def build_params(app, args) -> Any:
         pcs_power_mw=args.bess_power,
         min_soc_pct=args.soc_min,
         max_soc_pct=args.soc_max,
+        initial_soc_pct=args.initial_soc,
         peak_hours=parse_peak_hours(args.peak_hours),
         eta_charge=args.eta_c,
         eta_discharge=args.eta_d,
@@ -60,6 +65,8 @@ def build_optimizer(app, args) -> Any:
     return app.OptimizerParams(
         horizon_hours=args.horizon,
         step_hours=args.step,
+        forecast_mode=args.forecast_mode,
+        forecast_method=args.forecast_method,
         time_limit_s=args.time_limit,
         mip_gap=args.mip_gap,
         w_penalty=args.w_penalty,
@@ -152,13 +159,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--bess-power", type=float, default=200.0)
     parser.add_argument("--soc-min", type=float, default=0.0)
     parser.add_argument("--soc-max", type=float, default=90.0)
+    parser.add_argument("--initial-soc", type=float, default=50.0,
+                        help="initial state of charge, %% of the usable band")
     parser.add_argument("--peak-hours", default="5,6,19,20")
     parser.add_argument("--eta-c", type=float, default=0.97)
     parser.add_argument("--eta-d", type=float, default=0.96)
     parser.add_argument("--grid-limit", type=float, default=None)
 
-    parser.add_argument("--horizon", type=int, default=48)
-    parser.add_argument("--step", type=int, default=24)
+    parser.add_argument("--horizon", type=int, default=24)
+    parser.add_argument("--step", type=int, default=1)
+    parser.add_argument("--forecast-mode", default="causal",
+                        choices=("causal", "oracle"),
+                        help="causal (operational) or oracle (perfect-foresight benchmark)")
+    parser.add_argument("--forecast-method", default="seasonal_naive",
+                        choices=("seasonal_naive", "persistence"))
     parser.add_argument("--time-limit", type=float, default=30.0)
     parser.add_argument("--mip-gap", type=float, default=0.0)
     parser.add_argument("--w-penalty", type=float, default=1000.0)
@@ -197,6 +211,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print("=" * 72)
     print("run_scenario_experiment.py")
     print(f"  engine      : {args.engine}")
+    if args.engine == "milp":
+        print(f"  forecast    : {args.forecast_mode} ({args.forecast_method})")
+        print(f"  horizon     : {args.horizon} h / commit {args.step} h")
+        print(f"  initial SoC : {args.initial_soc:g} % of usable band")
     print(f"  scenarios   : {', '.join(labels)}")
     print("=" * 72)
 
@@ -215,6 +233,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.engine == "milp":
             row["windows"] = int(diag.get("windows", 0) or 0)
             row["fallback_windows"] = int(diag.get("fallback_windows", 0) or 0)
+            row["forecast_mode"] = args.forecast_mode
+            row["forecast_method"] = args.forecast_method
+        row["initial_soc_pct"] = args.initial_soc
         rows.append(row)
         print(f"  {label:<12} penalty {kpis.get('Penalty (MWh)', float('nan')):>10,.1f} MWh"
               f"  supplied {kpis.get('Total supplied (MWh)', float('nan')):>12,.1f} MWh")

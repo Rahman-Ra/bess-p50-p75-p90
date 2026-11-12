@@ -1,7 +1,7 @@
 {
-  "generated": "2026-11-10T18:13:33",
-  "solar_file": "oos_out/lgbm_solar_pred.csv",
-  "wind_file": "oos_out/lgbm_wind_pred.csv",
+  "generated": "2026-11-12T13:22:15",
+  "solar_file": "C:\\Users\\rahma\\OneDrive\\Documents\\Default Project\\oos_out\\lgbm_solar_pred.csv",
+  "wind_file": "C:\\Users\\rahma\\OneDrive\\Documents\\Default Project\\oos_out\\lgbm_wind_pred.csv",
   "train_years": [
     2020,
     2021,

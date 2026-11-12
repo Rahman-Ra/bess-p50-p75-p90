@@ -1,0 +1,4 @@
+scenario,file,engine,rows,Total generation (MWh),Total supplied (MWh),BESS export (MWh),Penalty (MWh),Curtailed (MWh),BESS losses (MWh),Delivery ratio (%),initial_soc_pct,is_baseline,Penalty_delta_vs_baseline,Supplied_delta_vs_baseline,BESS_export_delta_vs_baseline,Curtailed_delta_vs_baseline
+P50,sample_data\battery_input_annual_p50.csv,rule,8784,278152.032535023,262996.7074770707,208120.06690139667,45299.22019935389,0.0,6698.261758780476,94.55142393897695,50.0,True,0.0,0.0,0.0,0.0
+P75,sample_data\battery_input_annual_p75.csv,rule,8784,272494.1449169952,257502.34607712005,205930.19108879435,48211.16280574711,0.0,6627.659697860092,94.49830423165906,50.0,False,2911.9426063932187,-5494.361399950634,-2189.8758126023167,0.0
+P90,sample_data\battery_input_annual_p90.csv,rule,8784,263469.4556882675,248745.39590199623,202348.57655310363,53081.4828388102,0.0,6512.179090181252,94.4114737141703,50.0,False,7782.262639456312,-14251.311575074447,-5771.490348293039,0.0

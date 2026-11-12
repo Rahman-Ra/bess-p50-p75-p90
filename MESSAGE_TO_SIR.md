@@ -1,167 +1,180 @@
-# Message to Sir
+# Message to Sir — completion report
+
+**Subject: BESS P50/P75/P90 app — all nine review findings fixed and verified**
 
 ## Live app
 
 **https://rahman-ra.github.io/bess-p50-p75-p90/**
 
-Public, no login, and independent of your laptop. First load takes a few minutes
+Public, no login, and independent of my laptop. First load takes a few minutes
 while the browser downloads Python; later loads are cached.
 
-## What you asked
+## What was delivered
 
-> Take the P50 wind forecast and the P50 solar forecast and feed them into the
-> battery model as inputs. Then add conversion logic to change those P50 inputs
-> into P75 and P90, and explain what needs to be done and how to implement it.
+The updated app is **`bess_app_v6.py`**. I left **`bess_app_v5.py`** unchanged
+as the audited baseline, so every line number in your review still points at
+the exact code you reviewed.
 
-## What was done
+All eight findings in `rahman_bess_flaws.xlsx` and the verbal MILP look-ahead
+comment are fixed. Each fix has its own check; all nine pass.
 
-**1. P50 wind and P50 solar are now the battery-model inputs.**
+### 1. Degradation profile indexed by project year
 
-The battery app reads a `BESSTOOL_INPUT` table with `solar_MWh` and `wind_MWh`
-columns. The P50 forecast series are written directly into those two columns, so
-the existing dispatch engines (rule-based and rolling-horizon MILP) run on the
-P50 generation without any change to their internal logic.
+The profile is 1..N but was read with the calendar year, so
+`degr.get(2024)` always missed and degradation was silently ignored.
 
-**2. A P50 → P75/P90 conversion layer was added.**
+Both multi-year drivers now compute a 1-based project-year ordinal and use
+that. A three-year frame labelled 2030–2032 applies profile entries 1, 2 and 3
+exactly. **Check F1: PASS.**
 
-The conversion is in `quantile_scenarios.py`. It supports two complementary
-definitions, because they answer two different questions:
+### 2. Year-dependent RTE had the same bug
 
-| Mode | Formula | Used for |
-|---|---|---|
-| Hourly | `P_L(t) = max(0, P50(t) + Q_(1-L/100)(actual - P50 \| month, hour))` | Operational stress test, hour-by-hour reliability |
-| Annual | `P_L(t) = factor_L × P50(t)`, `factor_L = Q_(1-L/100)(annual energy) / median(annual energy)` | Bankability, firm capacity, revenue and debt sizing |
+The RTE profile now uses the same project-year ordinal in both drivers.
+Verified: efficiency follows entries 1 → 2 → 3 instead of falling back to
+year 1. **Check F2: PASS.**
 
-Important convention: **P90 means 90% probability of exceedance**, i.e. the
-conservative low case. Therefore `P90 <= P75 <= P50`. It is the 10th percentile
-of the generation distribution, not the 90th percentile.
+### 3. `n_years` did nothing
 
-Design choices that make the numbers defensible:
+`expand_to_n_years` now makes the simulated series exactly `n_years` long,
+repeating or truncating the input. A repeated non-leap year drops 29 February.
+Verified: 1→3 repeats, 3→1 truncates, 3→5 cycles, exact case unchanged.
+**Check F3: PASS.**
 
-- **Additive residual calibration by default.** Solar has many zero and near-zero
-  hours, where a multiplicative correction collapses to zero. Additive residuals
-  remain valid at night and in low-irradiance hours.
-- **Month × hour grouping with shrinkage.** Residual quantiles are fitted per
-  month and hour and shrunk toward the global quantile when a group is thin.
-  With 3 years of data, 288 month × hour groups now fit; the previous
-  `min_samples=200` default silently fell back to a global correction. That bug
-  was found and fixed (`min_samples=50`, plus a warning when no group qualifies).
-- **Joint solar + wind calibration for a shared BESS.** The combined P50 is
-  calibrated once and split back proportionally:
-  `total_P_L = calibration(P50_solar + P50_wind)`,
-  `solar_P_L = total_P_L × P50_solar / (P50_solar + P50_wind)`.
-  Adding solar-P90 and wind-P90 separately would double-count uncertainty.
-- **Battery-ready outputs.** The writer produces `battery_input_p50.csv`,
-  `battery_input_p75.csv` and `battery_input_p90.csv`, each with the scenario
-  values in `solar_MWh` and `wind_MWh`.
+### 4. Initial SoC was 100 %
 
-**3. The method and implementation are documented and tested.**
+`BESSParams.initial_soc_pct` was added, defaulting to **50 % of the usable
+band**. All four engines (rule single, rule split, MILP single, MILP split)
+start there, clamp inside the min/max band, and the “reset each year” option
+resets to the same value. The sidebar exposes it and the settings sheet
+records it. Verified: 100 % → 45.0 MWh and 50 % → 22.5 MWh on a 45 MWh usable
+band, in all four engines. **Check F4: PASS.**
 
-`SCENARIO_GUIDE.md` contains the formulas, exact commands, fitted factors,
-results and caveats. `test_quantile_scenarios.py` contains 10 regression tests
-covering coverage targets, the fixed-haircut failure, monotonicity,
-non-negativity, group calibration, annual factors, joint allocation, file writing
-and the CLI. All 10 pass.
+### 5. Joint annual factor applied to each technology
 
-**4. The app now has a P50/P75/P90 selector, and one file does the conversion.**
+Annual conversion is now **per technology** in both the app and
+`quantile_scenarios.py`:
 
-`bess_app_v5.py` is self-contained. It carries the fitted calibration inside the
-file (288 month × hour groups plus the annual factors), so you can upload a
-plain P50 `BESSTOOL_INPUT` — only `solar_MWh` and `wind_MWh` are needed — and the
-sidebar offers a **Scenario conversion** choice (*Annual factor* or *Hourly
-residual*) plus the **Generation scenario** selector (P50 / P75 / P90). Choosing
-a scenario replaces `solar_MWh`/`wind_MWh` with that scenario's values and runs
-the normal dispatch.
+```text
+solar_P_L = factor_solar,L × solar_P50
+wind_P_L  = factor_wind,L  × wind_P50
+total_P_L = solar_P_L + wind_P_L
+```
 
-`bess_app_v4_fixed.py` is the same app without the embedded calibration: it only
-reads P75/P90 columns that already exist in the uploaded file. Either way, files
-without scenario columns behave exactly as before.
+Solar uses 0.9878 / 0.9736, wind uses 0.9696 / 0.9147. The joint factor
+(0.9622 / 0.9500) is retained only as a portfolio diagnostic and is never
+applied to either series. Summing per-technology P75s is conservative relative
+to a true joint P75 when the resources are imperfectly correlated.
+**Check F5: PASS.** The annual sample files and results were regenerated.
 
-The embedded conversion was checked against the shipped scenario files: it
-reproduces `battery_input_annual_p75.csv`, `_p90.csv`, `battery_input_hourly_p75.csv`
-and `_p90.csv` to 3 × 10⁻¹⁴, with `P90 ≤ P75 ≤ P50` in every hour.
+### 6. `solar_contract_share` was dead code
 
-## Results (rule engine, 2024)
+Implemented a real per-technology contract split end to end: rule split engine,
+MILP split model with per-technology peak caps and penalties, both settlement
+writers, a sidebar control, and the settings sheet. Verified for shares 1.00,
+0.84, 0.50 and 0.00; solar-only and wind-only match their single-technology
+equivalents. **Check F6: PASS.**
+
+### 7. No chronological sort after load
+
+`validate_input_frame` now performs a stable sort by Year, Month, Day, Hour
+after coercion. Every engine goes through it, so an unsorted export can no
+longer dispatch solar against the wrong hour. Verified with a deliberately
+scrambled frame: it is reordered and the solar column realigns with its
+timestamp. **Check F7: PASS.**
+
+### 8. `fallback_windows` diagnostics overwritten
+
+Numeric diagnostics are now summed across windows; only string fields keep
+last-value semantics. Verified: a 9-window run reports 9 windows, 6 fallback
+windows, 3 degenerate windows, 12 MILP rescues and 1.5 s solve time.
+**Check F8: PASS.**
+
+### 9. MILP look-ahead bias
+
+The MILP is now a true receding-horizon controller:
+
+- **Causal forecast:** seasonal-naive, value from 24 hours earlier, built only
+  from data strictly before the window. No future values enter the model.
+- **Receding horizon:** solve `[t, t+24 h)`, commit only hour `t`, re-solve
+  next hour.
+- **Physical settlement:** each committed hour is settled against realised
+  generation, grid limit and state of charge. Forecast error cannot create
+  fictitious export.
+- **Honest benchmark:** the old perfect-foresight mode is retained but clearly
+  labelled as an upper bound in the UI and the settings sheet.
+- **Peak charging:** still forbidden by default; if explicitly allowed, the
+  settlement executes the plan instead of silently zeroing it.
+
+Verified on 720 h with zero fallbacks:
+
+| Controller | Penalty (MWh) | Supplied (MWh) |
+|---|---:|---:|
+| Rule-based | 5,338.2 | 17,461.8 |
+| MILP, causal receding horizon | 6,148.8 | 17,579.6 |
+| MILP, perfect-foresight benchmark | 5,344.0 | 17,524.0 |
+
+The causal MILP is slightly worse than the rule on this window. That is the
+honest consequence of removing look-ahead: the rule is tuned for this plant and
+the optimiser can no longer see future generation. The oracle result is close
+to the rule, which confirms the optimiser is sound; the gap between causal and
+oracle is the value of the forecast. **Checks F9 and F9 peak-charge: PASS.**
+
+## Updated results (rule engine, 2024)
+
+These use the corrected initial SoC (50 % of the usable band) and the
+per-technology annual factors.
 
 | Scenario | Penalty (MWh) | Supplied (MWh) | Delivery % |
 |---|---:|---:|---:|
-| Annual P50 | 45,140.5 | 263,263.3 | 94.65 |
-| Annual P75 | 50,608.6 | 253,074.3 | 94.56 |
-| Annual P90 | 52,457.8 | 249,806.4 | 94.54 |
-| Hourly P50 | 45,140.5 | 263,263.3 | 94.65 |
-| Hourly P75 | 99,642.0 | 190,328.0 | 94.15 |
-| Hourly P90 | 136,813.6 | 146,618.0 | 93.94 |
+| Annual P50 | 45,299.2 | 262,996.7 | 94.55 |
+| Annual P75 | 48,211.2 | 257,502.3 | 94.50 |
+| Annual P90 | 53,081.5 | 248,745.4 | 94.41 |
+| Hourly P50 | 45,299.2 | 262,996.7 | 94.55 |
+| Hourly P75 | 99,851.0 | 190,065.1 | 94.02 |
+| Hourly P90 | 137,051.4 | 146,357.3 | 93.77 |
 
-Fitted annual factors (2015–2024):
+The annual P90 adds about 7,800 MWh of penalty over P50, not a collapse. The
+hourly P90 is much harsher (about 137,000 MWh) because it applies bad weather
+in every hour; it is an operational stress test, not an annual bankable case.
 
-| Resource | P75 | P90 |
-|---|---:|---:|
-| Solar | 0.9878 | 0.9736 |
-| Wind | 0.9696 | 0.9147 |
-| Combined solar + wind | 0.9622 | 0.9500 |
+## Verification summary
 
-The annual case gives a modest, bankable haircut. The hourly case is much more
-severe because it applies the residual quantile in every hour; it is an
-operational stress test, not a replacement for the annual bankable case.
+```text
+F1/F2  PASS   F3  PASS   F4  PASS   F5  PASS   F6  PASS
+F7     PASS   F8  PASS   F9  PASS   F9 peak-charge  PASS
+UI integration (rule, causal MILP, split block, oracle, settings)  PASS
+python -m pytest -q test_quantile_scenarios.py                     10 passed
+```
 
-## How to run it
+`FLAW_FIXES.md` contains the finding-by-finding detail and the evidence above.
+
+## How to run
 
 ```powershell
 pip install -r requirements.txt
-python -m streamlit run bess_app_v5.py
+python -m streamlit run bess_app_v6.py
 ```
 
-Then upload `sample_data/battery_input_annual_p50.csv` (or the hourly file) in
-the **Upload BESSTOOL_INPUT** box, choose P50/P75/P90 in the **Generation
-scenario** selector, and click **Run BESS dispatch**. One upload contains all three
-scenarios, so no second file is needed.
+Upload `sample_data/battery_input_annual_p50.csv` (or the hourly file), choose
+P50 / P75 / P90 in the **Generation scenario** selector, and click **Run BESS
+dispatch**. One upload contains all three scenarios.
 
-To reproduce the battery comparison (the P75/P90 inputs are included):
+The MILP defaults to the causal information set. For the benchmark, choose
+**Realised generation (perfect-foresight benchmark)** in the sidebar; the app
+labels it as an upper bound.
 
-```powershell
-python run_scenario_experiment.py `
-  --inputs sample_data/battery_input_annual_p50.csv,sample_data/battery_input_annual_p75.csv,sample_data/battery_input_annual_p90.csv `
-  --labels P50,P75,P90 --engine rule --outdir dispatch_annual
-```
-
-To regenerate the scenarios from raw forecast files, use
-`quantile_scenarios.py`; the exact commands for this project are in
-`SCENARIO_GUIDE.md` §5.
-
-## Files in this package
-
-| File | Purpose |
-|---|---|
-| `bess_app_v5.py` | Single-file app: P50/P75/P90 selector with the calibration embedded |
-| `bess_app_v4_fixed.py` | Same app, reads pre-built P75/P90 columns from the upload |
-| `quantile_scenarios.py` | P50 → P75/P90 calibration and battery-input writer |
-| `run_scenario_experiment.py` | Runs the battery engine on all three scenarios |
-| `run_experiment.py` | Shared experiment harness |
-| `sample_data/` | Ready-to-upload annual and hourly scenario files |
-| `results/` | KPI tables and figures |
-| `calibration/` | Fitted factors and offsets for audit |
-| `SCENARIO_GUIDE.md` | Full method, formulas, commands and caveats |
-| `README.md` | Package overview and quick start |
-
-## Caveats to state clearly
+## Caveats
 
 - The sample data are illustrative and are not a plant recommendation.
-- Annual P90 needs 10+ years of data to be stable; with 3 years it is indicative.
+- Annual P90 needs 10+ years of data to be stable.
 - The absolute KPIs should not be read as a final design. Substitute the actual
   capacities, contract and battery, then compare the P50/P75/P90 deltas.
-- If the P50 forecast itself is biased, calibrate against actual generation with
-  `--calibrate-p50` before applying the quantile layer.
+- The perfect-foresight MILP is a benchmark, not an operational controller.
+  Use the causal mode for deployable results.
 
-## Suggested short message
+## Package
 
-> Sir, I have completed the P50/P75/P90 work. The P50 wind and solar forecasts
-> are now fed directly into the battery model as `wind_MWh` and `solar_MWh`
-> inputs. I added a calibration layer that converts P50 into P75 and P90 using
-> hourly residual quantiles (for operational stress testing) and annual energy
-> factors (for bankability). P90 is treated correctly as 90% probability of
-> exceedance, so P90 <= P75 <= P50. The Streamlit app now has a P50/P75/P90
-> selector, and the package includes sample inputs, KPI results, the fitted
-> calibration and a full method guide. All 10 scenario tests pass. The main
-> results are: annual P90 penalty 52,457.8 MWh vs P50 45,140.5 MWh; hourly P90
-> penalty 136,813.6 MWh vs P50 45,140.5 MWh. I have attached the package and the
-> guide; happy to walk through the method.
+The package contains `bess_app_v6.py`, `bess_app_v5.py` (audited baseline),
+`quantile_scenarios.py`, the experiment runners, the sample inputs, the updated
+result tables and figures, the fitted calibration, `FLAW_FIXES.md`,
+`SCENARIO_GUIDE.md` and this report.

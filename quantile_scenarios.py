@@ -42,8 +42,16 @@ hours and under-protects uncertain ones.  On the out-of-sample predictions in
 this repository, a fixed 0.8 x P50 gave roughly 45 % coverage, while the
 empirical P90 gave 89-90 %.
 
-Joint solar+wind
-----------------
+Annual mode
+-----------
+For bankability factors (``--mode annual``) the conversion is per technology:
+solar uses its own factor and wind its own, and the total is the sum.  A joint
+factor is still written to the calibration JSON as a portfolio diagnostic, but
+it is not applied to the individual series, because the two technologies have
+different interannual spreads.
+
+Joint solar+wind (hourly mode)
+------------------------------
 For a shared battery, do not add solar-P90 and wind-P90: that double-counts
 uncertainty when the two resources are imperfectly correlated.  ``--aggregation
 joint`` calibrates the *total* solar+wind generation and allocates the total
@@ -758,7 +766,17 @@ def build_scenario_hourly(
     out["total_actual_MWh"] = out["solar_actual_MWh"] + out["wind_actual_MWh"]
     out["total_p50_MWh"] = out["solar_p50_MWh"] + out["wind_p50_MWh"]
 
-    if aggregation == "joint":
+    if isinstance(solar_cal, AnnualFactorCalibration):
+        # FLAW 5 FIX - annual conversion is per technology. The joint factor is
+        # a portfolio diagnostic only; applying it to each series mixed the
+        # technologies' very different interannual spreads.
+        for level in levels:
+            out[f"solar_p{level}_MWh"] = solar_scen[int(level)]
+            out[f"wind_p{level}_MWh"] = wind_scen[int(level)]
+            out[f"total_p{level}_MWh"] = (
+                solar_scen[int(level)] + wind_scen[int(level)]
+            )
+    elif aggregation == "joint":
         if joint_cal is None:
             raise ValueError("joint aggregation requested without a joint calibration")
         joint = apply_joint_scenarios(
@@ -999,9 +1017,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             hourly[f"total_p{level}_MWh"] = solar_scen[int(level)]
 
     # Score the exact columns written to scenario_hourly.csv and the battery
-    # inputs.  In joint mode solar_pXX/wind_pXX are allocated shares of the
-    # joint solar+wind total, so scoring the standalone calibrations here would
-    # report coverage for columns that are not the ones actually dispatched.
+    # inputs.  In hourly joint mode solar_pXX/wind_pXX are allocated shares of
+    # the joint solar+wind total, so scoring the standalone calibrations there
+    # would report coverage for columns that are not the ones actually
+    # dispatched. In annual mode each technology uses its own factor, so the
+    # standalone columns are exactly the dispatched ones.
     score_targets = [("solar", "solar_actual_MWh")]
     if wind is not None and wind_cal is not None:
         score_targets.append(("wind", "wind_actual_MWh"))

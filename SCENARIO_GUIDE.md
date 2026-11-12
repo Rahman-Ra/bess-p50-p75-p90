@@ -14,8 +14,14 @@ The short version:
   - **annual P90** — the standard finance/resource number;
   - **hourly P90** — the 10th percentile of each hour's predictive
     distribution, much more severe.
-- Do not add solar-P90 and wind-P90. If they share a battery, calibrate the
-  combined solar+wind total; otherwise uncertainty is double-counted.
+- **Annual P-values are per technology.** Solar and wind have very different
+  interannual variability, so each uses its own annual factor and the total is
+  their sum. The joint solar+wind factor is a portfolio diagnostic only; it is
+  never applied to either resource.
+- **Hourly P-values pool the joint total.** The hourly residual quantile is
+  fitted on the combined solar+wind series and split back pro rata on the P50
+  shares, because the resources share one battery and their hourly errors are
+  correlated.
 
 ## 1. What the LinkedIn post implies for the battery
 
@@ -66,13 +72,31 @@ relative to the median year are:
 
 | Resource | P75 factor | P90 factor | Annual CV |
 |---|---:|---:|---:|
-| Solar | 0.988 | 0.974 | 2.8 % |
-| Wind | 0.970 | 0.915 | 7.9 % |
-| Combined | 0.962 | 0.950 | 3.9 % |
+| Solar | 0.9878 | 0.9736 | 2.8 % |
+| Wind | 0.9696 | 0.9147 | 7.9 % |
+| Joint diagnostic | 0.9622 | 0.9500 | 3.9 % |
 
 Wind is much more variable year-to-year than solar; the combined portfolio is
 smoother than either resource alone. This is the diversification point in the
 post.
+
+The factors are applied **per technology**:
+
+```text
+solar_P_L(t) = 0.9878 or 0.9736 × solar_P50(t)
+wind_P_L(t)  = 0.9696 or 0.9147 × wind_P50(t)
+total_P_L(t) = solar_P_L(t) + wind_P_L(t)
+```
+
+The joint factor is shown only to quantify diversification. Applying it to
+both resources, as the previous version did, overstated solar risk and
+understated wind risk; that was review finding 5.
+
+Summing per-technology P75s is conservative relative to a true joint P75 when
+the resources are imperfectly correlated, so it does not double-count
+uncertainty in the conservative direction. If a lender asks for a portfolio
+P75 rather than a resource-level P75, use the joint diagnostic explicitly and
+state the correlation assumption.
 
 The **hourly** P90 is far more severe. In the same test window, wind P90 has a
 mean of about 4.3 MWh against an actual mean of 14.7 MWh. That is a legitimate
@@ -93,8 +117,11 @@ specific evening peak.
 |---|---|
 | `quantile_scenarios.py` | Fit P75/P90 from historical forecast errors or annual energy; write hourly scenarios and battery-ready inputs. |
 | `run_scenario_experiment.py` | Run the existing rule/MILP dispatch on P50/P75/P90 inputs and compare KPIs. |
-| `test_quantile_scenarios.py` | Tests for calibration, monotonicity, joint allocation and file writing. |
-| `bess_app_v4_fixed.py` | Optional sidebar **Generation scenario** selector when a file contains `solar_p50_MWh`/`p75`/`p90` columns. |
+| `run_experiment.py` | Shared harness for causal-vs-oracle MILP experiments. |
+| `test_quantile_scenarios.py` | Tests for calibration, monotonicity, allocation and file writing. |
+| `bess_app_v6.py` | Current single-file app: P50/P75/P90 selector, embedded calibration, all nine review fixes. |
+| `bess_app_v5.py` | Audited baseline from the previous review; kept unchanged for line-number traceability. |
+| `FLAW_FIXES.md` | Finding-by-finding fix record and verification evidence. |
 
 ## 5. Commands
 
@@ -140,6 +167,10 @@ python quantile_scenarios.py `
 period. It fits the P-values on the full 10-year resource record while still
 derating the P50 forecast series.
 
+Annual conversion is per technology regardless of `--aggregation`: the joint
+factor printed in this mode is a portfolio diagnostic, never an input to the
+solar or wind series.
+
 ### 5.3 Battery comparison
 
 ```powershell
@@ -149,8 +180,10 @@ python run_scenario_experiment.py `
   --outdir scenario_dispatch_annual
 ```
 
-Use `--engine milp` for the rolling-horizon optimiser. Start with `--hours 720`
-if you want a one-month check before running a full year.
+Use `--engine milp` for the receding-horizon optimiser. Start with `--hours 720`
+if you want a one-month check before running a full year. The MILP defaults to
+the causal information set; add `--forecast oracle` for the explicitly labelled
+perfect-foresight benchmark.
 
 **Reproducing the shipped numbers.** `scenario_hourly_raw/` is the uncalibrated
 P50 variant (`calibrate_p50: false`); the §5.1 command uses `--calibrate-p50`
@@ -159,38 +192,54 @@ documented KPI table, use the battery inputs in `sample_data/`, which are the
 exact files that produced `results/scenario_kpis_annual.md` and
 `results/scenario_kpis_hourly.md`.
 
-**Joint-mode column names.** With `--aggregation joint`, `solar_pXX_MWh` and
-`wind_pXX_MWh` are proportional allocations of the joint solar+wind scenario.
-They are not standalone resource PXX values; the scenario level is
-`total_pXX_MWh`. The summary scores these exact allocated columns, so its
-coverage matches the battery inputs.
+**Joint-mode column names (hourly only).** With `--aggregation joint` in hourly
+mode, `solar_pXX_MWh` and `wind_pXX_MWh` are proportional allocations of the
+joint solar+wind scenario. They are not standalone resource PXX values; the
+scenario level is `total_pXX_MWh`. Annual mode is always per technology: the
+columns are true resource-level PXX values and the total is their sum.
 
 ## 6. Using the Streamlit app
 
-Upload any `battery_input_p*.csv` file. If the file contains
-`solar_p50_MWh` / `solar_p75_MWh` / `solar_p90_MWh` (and the wind equivalents),
-a **Generation scenario** selector appears in the sidebar. The app replaces
-`solar_MWh` and `wind_MWh` with the chosen scenario before dispatch, leaving the
-original columns in the file for audit.
+Start `bess_app_v6.py`. Upload any `battery_input_p*.csv` file. If the file
+contains `solar_p50_MWh` / `solar_p75_MWh` / `solar_p90_MWh` (and the wind
+equivalents), a **Generation scenario** selector appears in the sidebar. The
+app replaces `solar_MWh` and `wind_MWh` with the chosen scenario before
+dispatch, leaving the original columns in the file for audit.
 
-If the file has only `solar_MWh` and `wind_MWh`, the app behaves exactly as
-before.
+If the file has only `solar_MWh` and `wind_MWh`, the app offers the embedded
+**Scenario conversion** (annual factor or hourly residual) and then the
+**Generation scenario** selector.
+
+Additional controls that matter for the review fixes:
+
+- **Initial state of charge (% of usable band)** — default 50 %, shared by all
+  engines;
+- **Number of years (repeat same TS)** — defines the exact simulated horizon;
+- **Information set** — *Causal forecast* (default, deployable) or *Realised
+  generation* (perfect-foresight benchmark, explicitly labelled as an upper
+  bound);
+- **Receding horizon** — solve 24 h ahead and commit 1 h;
+- **Solar contract share** — per-technology split in split mode.
 
 ## 7. What the demo run shows
 
 Rule-based engine, 2024, illustrative plant parameters (281 MW solar,
 190 MW contract, 600 MWh / 200 MW BESS):
 
-| Scenario | Penalty (MWh) | Supplied (MWh) | BESS export (MWh) |
-|---|---:|---:|---:|
-| Annual P50 | 45,140 | 263,263 | 208,279 |
-| Annual P75 | 50,609 | 253,074 | — |
-| Annual P90 | 52,458 | 249,806 | — |
+| Scenario | Penalty (MWh) | Supplied (MWh) | BESS export (MWh) | Delivery % |
+|---|---:|---:|---:|---:|
+| Annual P50 | 45,299 | 262,997 | 208,120 | 94.55 |
+| Annual P75 | 48,211 | 257,502 | 205,930 | 94.50 |
+| Annual P90 | 53,081 | 248,745 | 202,349 | 94.41 |
+| Hourly P50 | 45,299 | 262,997 | 208,120 | 94.55 |
+| Hourly P75 | 99,851 | 190,065 | 166,943 | 94.02 |
+| Hourly P90 | 137,051 | 146,357 | 135,147 | 93.77 |
 
-The annual P90 adds about 7,300 MWh of penalty over P50, not a collapse. The
-hourly P90 is much harsher (about 138,000 MWh penalty) because it assumes bad
+The annual P90 adds about 7,800 MWh of penalty over P50, not a collapse. The
+hourly P90 is much harsher (about 137,000 MWh penalty) because it assumes bad
 weather in every hour. That difference is the annual-versus-hourly distinction
-in numbers.
+in numbers. These values use the corrected initial SoC (50 % of the usable
+band) and the per-technology annual factors.
 
 The absolute values are not a plant recommendation: the sample data are
 per-100-MW resource profiles and the contract/BESS settings are the paper
@@ -221,12 +270,18 @@ test["p75"] = scen[75]
 test["p90"] = scen[90]
 ```
 
-For annual factors:
+For annual factors, apply each resource's own factor:
 
 ```python
-cal = qs.fit_annual_factors(actual_annual_series, years, levels=(50, 75, 90))
-scen = cal.scenario(p50_hourly)   # scalar factor, hourly shape preserved
+solar_cal = qs.fit_annual_factors(solar_annual, years, levels=(50, 75, 90))
+wind_cal = qs.fit_annual_factors(wind_annual, years, levels=(50, 75, 90))
+s_scen = solar_cal.scenario(solar_p50_hourly)   # scalar factor, shape preserved
+w_scen = wind_cal.scenario(wind_p50_hourly)
+total_p75 = s_scen[75] + w_scen[75]
+total_p90 = s_scen[90] + w_scen[90]
 ```
+
+Do not multiply both resources by the joint factor; that is review finding 5.
 
 ## 9. Caveats and next steps
 
@@ -236,8 +291,11 @@ scen = cal.scenario(p50_hourly)   # scalar factor, hourly shape preserved
    your P50 already comes from a calibrated resource model, leave the flag off.
 2. **Annual P-values need 10+ years.** Three years give a noisy P90. Use
    `--annual-actual` with the full record.
-3. **Joint, not additive.** For a shared BESS, use `--aggregation joint`. Use
-   `individual` only when solar and wind have separate batteries.
+3. **Annual per technology, hourly joint.** Annual factors are resource
+   statements: apply each resource's own factor and sum the series. Hourly
+   residual quantiles are fit on the joint total and split pro rata, because
+   the resources share one battery and their hourly errors are correlated.
+   The joint annual factor is a diagnostic, not an input to either series.
 4. **Deterministic scenarios are not a robust optimisation.** Running P50, P75
    and P90 separately shows sensitivity. A truly firm dispatch would optimise
    against a weighted scenario set (e.g. 0.5/0.3/0.2) or a min-max regret
