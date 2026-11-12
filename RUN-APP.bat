@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 REM Double-click launcher for the BESS P50/P75/P90 app.
 cd /d "%~dp0"
 echo Starting BESS P50 / P75 / P90 app ...

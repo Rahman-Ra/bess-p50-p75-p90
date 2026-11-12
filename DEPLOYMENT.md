@@ -1,4 +1,4 @@
-﻿# Deploying the Streamlit UI (public link)
+# Deploying the Streamlit UI (public link)
 
 The app is a normal Streamlit app. The entry point is:
 
