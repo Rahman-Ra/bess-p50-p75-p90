@@ -1,6 +1,6 @@
 # Message to Sir — completion report
 
-**Subject: BESS P50/P75/P90 app — all nine review findings fixed and verified**
+**Subject: BESS P50/P75/P90 app — review findings fixed, independently re-audited and verified**
 
 ## Live app
 
@@ -16,7 +16,11 @@ as the audited baseline, so every line number in your review still points at
 the exact code you reviewed.
 
 All eight findings in `rahman_bess_flaws.xlsx` and the verbal MILP look-ahead
-comment are fixed. Each fix has its own check; all nine pass.
+comment are fixed. Independent re-audits then checked the whole runtime,
+engine and scenario pipeline and confirmed 26 further defects; all 35 tracked
+items are fixed. The completion workbook `rahman_bess_flaws_completed.xlsx`
+records the status and evidence for every row, and `FLAW_FIXES.md` section 10
+documents the additional findings.
 
 ### 1. Degradation profile indexed by project year
 
@@ -143,7 +147,7 @@ in every hour; it is an operational stress test, not an annual bankable case.
 F1/F2  PASS   F3  PASS   F4  PASS   F5  PASS   F6  PASS
 F7     PASS   F8  PASS   F9  PASS   F9 peak-charge  PASS
 UI integration (rule, causal MILP, split block, oracle, settings)  PASS
-python -m pytest -q test_quantile_scenarios.py                     10 passed
+python -m pytest -q test_quantile_scenarios.py test_audit_fixes.py  29 passed
 ```
 
 `FLAW_FIXES.md` contains the finding-by-finding detail and the evidence above.
@@ -177,4 +181,5 @@ labels it as an upper bound.
 The package contains `bess_app_v6.py`, `bess_app_v5.py` (audited baseline),
 `quantile_scenarios.py`, the experiment runners, the sample inputs, the updated
 result tables and figures, the fitted calibration, `FLAW_FIXES.md`,
-`SCENARIO_GUIDE.md` and this report.
+`SCENARIO_GUIDE.md`, the completion workbook
+`rahman_bess_flaws_completed.xlsx`, both regression test files, and this report.

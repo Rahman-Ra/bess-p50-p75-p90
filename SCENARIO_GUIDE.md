@@ -119,7 +119,7 @@ specific evening peak.
 | `run_scenario_experiment.py` | Run the existing rule/MILP dispatch on P50/P75/P90 inputs and compare KPIs. |
 | `run_experiment.py` | Shared harness for causal-vs-oracle MILP experiments. |
 | `test_quantile_scenarios.py` | Tests for calibration, monotonicity, allocation and file writing. |
-| `bess_app_v6.py` | Current single-file app: P50/P75/P90 selector, embedded calibration, all nine review fixes. |
+| `bess_app_v6.py` | Current single-file app: P50/P75/P90 selector, embedded calibration, all review fixes plus the independent re-audit corrections. |
 | `bess_app_v5.py` | Audited baseline from the previous review; kept unchanged for line-number traceability. |
 | `FLAW_FIXES.md` | Finding-by-finding fix record and verification evidence. |
 
@@ -182,8 +182,8 @@ python run_scenario_experiment.py `
 
 Use `--engine milp` for the receding-horizon optimiser. Start with `--hours 720`
 if you want a one-month check before running a full year. The MILP defaults to
-the causal information set; add `--forecast oracle` for the explicitly labelled
-perfect-foresight benchmark.
+the causal information set; add `--forecast-mode oracle` for the explicitly
+labelled perfect-foresight benchmark.
 
 **Reproducing the shipped numbers.** `scenario_hourly_raw/` is the uncalibrated
 P50 variant (`calibrate_p50: false`); the §5.1 command uses `--calibrate-p50`

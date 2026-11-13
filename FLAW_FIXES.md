@@ -5,6 +5,12 @@ comment has been fixed in **`bess_app_v6.py`**. `bess_app_v5.py` is left
 unchanged as the audited baseline, so the line numbers in the review still
 point at the code that was reviewed.
 
+After those fixes, an independent re-audit checked the runtime, the core
+engines and the scenario pipeline. Every confirmed finding from that pass is
+also fixed and listed in section 10 below. The completion workbook
+`rahman_bess_flaws_completed.xlsx` records the status and recheck evidence for
+both sets.
+
 Each fix was verified with a dedicated check before moving to the next one.
 The checks are named `F1`–`F9` below. All nine pass, plus a separate
 peak-charging edge case for the settlement logic.
@@ -184,11 +190,58 @@ PCS limits, charge/discharge complementarity and the split-site per-technology
 balances. The peak-charge edge case separately verifies that an allowed peak
 charge is executed and reproduced by the oracle settlement.
 
+## 10. Independent re-audit findings
+
+The re-audit was run in four independent passes (runtime paths, core engine,
+scenario/CLI pipeline and a final diff audit). Each confirmed defect was fixed
+and pinned by a regression test in `test_audit_fixes.py` or
+`test_quantile_scenarios.py`.
+
+| ID | Defect found | Fix applied | Recheck evidence |
+|---|---|---|---|
+| R1 / C1 | Split MILP grid import was not tied to either battery's SoC, so imported energy vanished or was created | Import is split per battery (`imps`/`impw`), enters each SoC balance, settlement attributes it to the absorbing battery | `test_split_grid_import_enters_both_soc_and_reporting`; probe 3 split grid charge |
+| R8 | Export cap was applied net of import, letting an hour import and export simultaneously; oracle replay disagreed with the plan | Gross export cap (`plant + BESS`) in both optimisers and both settlement writers, plus a separate import cap | `test_oracle_grid_import_replay_matches_plan_single`; probe 15 |
+| R9 | Split MILP cycle budget counted only plant charging, so grid-charged energy could exceed the warranty limit by roughly 19x | Grid imports enter `thr_s`/`thr_w`, matching the single-site model and both settlement writers | `test_split_cycle_budget_includes_grid_charging`; 24 h probe: import = throughput = 54.794521 MWh = budget |
+| M1 | One complementarity binary was shared by the solar and wind batteries | One charge/discharge binary per battery | `test_split_batteries_have_independent_complementarity` |
+| M2 | Self-discharge was in the MILP but missing from settlement replay | `rho` is passed into both settlement writers and applied before each hour | `test_self_discharge_is_replayed_in_settlement` |
+| R2 / M3 | A terminal SoC target outside the operating band made every window infeasible | Target is clamped into the min/max band before the constraint is built | `test_terminal_soc_is_clamped_into_the_operating_band` |
+| R3 / M4 / M5 | Split penalty was measured against the grid-capped export target instead of the full contract share | Export target respects the cap; penalty target is the full contractual share in the rule engine, MILP and settlement | `test_split_penalty_matches_single_when_grid_cap_binds`; probe 8 |
+| R4 / M6 | `BESS_TotalCycles` repeated the block-end value on every row | Cumulative throughput is reported per hour for single and split | `test_cycles_are_reported_cumulatively_per_hour` |
+| R5 / m7 | Duplicate or out-of-range peak hours inflated required demand | `parse_peak_hours` keeps unique valid clock hours; daily/monthly demand uses the unique count | `test_peak_hours_are_deduplicated_and_penalty_uses_unique_hours` |
+| R6 / m8 | Negative capacities/contracts produced negative exports and inflated curtailment | `sanitize_bess_params` clamps every engine input; UI number inputs also have `min_value=0` | `test_negative_inputs_are_sanitized`; probe 14 |
+| R7 / m6 / P9 | A P50-only upload made the scenario map truthy and suppressed the embedded P75/P90 build | P50 is promoted to `solar_MWh`/`wind_MWh`, and the "pre-built" test now requires a P75 or P90 column | `test_validator_accepts_p50_only_and_rejects_fractional_hour`; probe 16 |
+| M7 | Short 0-based degradation profiles were misread; percentages and duplicate years were accepted | Profile is coerced, clipped, de-duplicated and shifted from 0-based to 1-based correctly | `test_degradation_profile_is_shifted_deduplicated_and_clamped` |
+| M8 | Custom formulas could not call `np.maximum` / `np.where` | Formula evaluation uses `eval` with NumPy in the context | `test_custom_formula_can_call_numpy` |
+| m1 | Fractional `Hour` values were truncated to integers and could hide duplicate hours | Validator rejects non-integer hours | `test_validator_accepts_p50_only_and_rejects_fractional_hour` |
+| m4 | The causal spike filter fell back to the full-sample standard deviation in warm-up rows, leaking future data | Warm-up rows without strictly-prior history are left unclipped | `test_quantile_scenarios.py` + pipeline probe |
+| m9 | MILP help text said the horizon default was 48 h while the widget used 24 h | Help text corrected to 24 h | UI integration check |
+| P1 | Annual `--side upper` used the wrong quantile and reversed the monotonicity direction | Upper side uses `1 - level/100` and enforces P10 >= P25 >= P50 | `test_annual_upper_side_orders_p10_above_p25_above_p50` |
+| P3 | CLI runners bypassed `validate_input_frame` and sliced files positionally | Both runners call the shared validator before slicing | `test_cli_runner_rejects_duplicate_timestamps` |
+| P4 | Annual metadata labelled the forecast train years as the factor sample | `annual_fit_source` and `annual_fit_years` record the actual fit sample | `test_annual_run_records_fit_source_and_years` |
+| P5 | Partial years and missing values were summed as if complete | Annual calibration rejects incomplete years and missing generation | `test_annual_fit_requires_complete_years` |
+| P6 | `--calibrate-p50` was silently inert in annual mode | CLI prints an explicit note | `test_annual_run_records_fit_source_and_years` |
+| P8 | The app did not clamp P75 to P50 before enforcing P90 <= P75 | Both per-technology clamps are applied in order | `test_embedded_annual_scenarios_stay_ordered` |
+| P10 | A missing wind column in the annual actual file became zero wind | Missing wind is rejected; NaN generation is rejected rather than zero-filled | `test_annual_actual_missing_wind_column_is_rejected` |
+| P12 | Annual completeness counted rows only: 8760 rows in a leap year, or a duplicate replacing a missing hour, passed | `_require_complete_annual_frame` rejects duplicate/non-hourly timestamps and requires an unbroken 8760/8784-hour calendar year | `test_annual_fit_requires_complete_years` covers short, leap-short, duplicate, non-hourly and complete leap/non-leap samples |
+| P7 / P11 | Stale `--forecast` documentation and stale code comments | README and `SCENARIO_GUIDE.md` now use `--forecast-mode`; comments corrected | Documentation review |
+| — | Grid charging was invisible in the output schema | `Grid_Import_MWh` added to single/split rule and optimised schemas; import enters the energy-balance identity | `test_oracle_grid_import_replay_matches_plan_single` |
+
+### Accepted design limitations (documented, not silent defects)
+
+| Item | Reason |
+|---|---|
+| m2: repeating a non-leap year into a leap target leaves 29 February absent | The app treats the input as a representative year and keeps the chronology valid by dropping 29 February from the source when the target is not a leap year. Adding a synthetic leap day would invent generation. |
+| m3: the first causal window has no prior history | At t = 0 no earlier observation exists. The first window uses the available window values; after that the forecast is strictly causal. This is inherent to a cold start, not a look-ahead leak. |
+| m5: index-form `Year`/`DATE` inputs | The supported input contract is explicit `Year, Month, Day, Hour` columns. Files without them are rejected with a clear error instead of being silently misinterpreted. |
+
 ## Regression status
 
 ```text
 F1/F2  PASS   F3  PASS   F4  PASS   F5  PASS   F6  PASS
 F7     PASS   F8  PASS   F9  PASS   F9 peak-charge  PASS
 UI integration (rule, causal MILP, split block, oracle, settings)  PASS
-python -m pytest -q test_quantile_scenarios.py                     10 passed
+python -m pytest -q test_quantile_scenarios.py test_audit_fixes.py  29 passed
 ```
+
+The completion workbook additionally records the recheck result for every
+original row and every additional finding.

@@ -198,6 +198,7 @@ class ExceedanceCalibration:
     shrinkage: float = 50.0
     zero_floor: float = 1e-6
     calibrate_p50: bool = False
+    side: str = "lower"
 
     def _value_for_key(self, level: int, key: Tuple[int, ...]) -> float:
         group = self.group_values.get(key)
@@ -251,12 +252,19 @@ class ExceedanceCalibration:
                 scenario = p50 + value
             out[int(level)] = np.clip(scenario, 0.0, None)
 
-        # Enforce P90 <= P75 <= P50 even when shrinkage or clipping bends an
-        # individual group.  This is a physical requirement, not cosmetics: a
-        # "conservative" case that is above the central case is a bug.
+        # Enforce the side's ordering even when shrinkage or clipping bends an
+        # individual group. AUDIT FIX (P1) - for the upper side the labels are
+        # P10/P25/P50, so the requirement is P10 >= P25 >= P50, not the
+        # conservative direction.
         ordered = sorted(out)
-        for previous, current in zip(ordered, ordered[1:]):
-            out[current] = np.minimum(out[current], out[previous])
+        if self.side == "upper":
+            for current, previous in zip(
+                reversed(ordered[1:]), reversed(ordered[:-1])
+            ):
+                out[previous] = np.maximum(out[previous], out[current])
+        else:
+            for previous, current in zip(ordered, ordered[1:]):
+                out[current] = np.minimum(out[current], out[previous])
         return out
 
     def to_dict(self) -> Dict[str, Any]:
@@ -268,6 +276,7 @@ class ExceedanceCalibration:
             "min_samples": self.min_samples,
             "shrinkage": self.shrinkage,
             "calibrate_p50": self.calibrate_p50,
+            "side": self.side,
             "global_values": {str(k): v for k, v in self.global_values.items()},
             "group_values": [
                 {
@@ -308,12 +317,17 @@ class AnnualFactorCalibration:
             out[int(level)] = np.clip(p50 * float(self.factors[int(level)]), 0.0, None)
         # Factors are monotone by construction, but enforce the correct
         # direction after clipping so a hand-edited factor file cannot produce
-        # P90 > P75 on a lower-side case (or P90 < P75 on an upper-side case).
+        # P90 > P75 on a lower-side case. AUDIT FIX (P1) - the upper-side
+        # labels are P10/P25/P50, so the order must be P10 >= P25 >= P50.
         ordered = sorted(out)
         if self.side == "upper":
-            for previous, current in zip(ordered, ordered[1:]):
-                out[current] = np.maximum(out[current], out[previous])
+            # Walk down from the central case: P10 >= P25 >= P50.
+            for current, previous in zip(
+                reversed(ordered[1:]), reversed(ordered[:-1])
+            ):
+                out[previous] = np.maximum(out[previous], out[current])
         else:
+            # Walk up from the central case: P90 <= P75 <= P50.
             for previous, current in zip(ordered, ordered[1:]):
                 out[current] = np.minimum(out[current], out[previous])
         return out
@@ -327,6 +341,58 @@ class AnnualFactorCalibration:
             "reference_annual": self.reference_annual,
             "side": self.side,
         }
+
+
+def _require_complete_annual_frame(
+    frame: pd.DataFrame, *, label: str, columns: Sequence[str] = ()
+) -> None:
+    """Reject partial years or missing generation in an annual fit sample.
+
+    AUDIT FIX (P5) - a year with missing hourly rows was still summed as if
+    it were complete, biasing the reference median and P90 downwards.
+    """
+    if "time" not in frame.columns:
+        raise ValueError(f"{label} has no parsed time column")
+
+    # AUDIT FIX (final pass) - a row count alone is not completeness: a leap
+    # year missing 31 December still has 8760 rows, and a duplicate timestamp
+    # can replace a missing hour without changing the count. Require exactly
+    # one row per clock hour and an unbroken January-December sequence.
+    times = pd.to_datetime(frame["time"], errors="coerce")
+    if getattr(times.dt, "tz", None) is not None:
+        times = times.dt.tz_localize(None)
+    if times.isna().any():
+        raise ValueError(
+            f"{label} does not contain complete years: invalid or missing timestamps"
+        )
+    duplicates = times[times.duplicated()]
+    if len(duplicates):
+        raise ValueError(
+            f"{label} does not contain complete years: duplicate timestamp "
+            f"{duplicates.iloc[0]} (need exactly one row per hour)"
+        )
+    for year, group in times.groupby(times.dt.year, sort=True):
+        expected = pd.date_range(
+            start=pd.Timestamp(year=int(year), month=1, day=1),
+            end=pd.Timestamp(year=int(year), month=12, day=31, hour=23),
+            freq="h",
+        )
+        actual = pd.DatetimeIndex(group.to_numpy()).sort_values()
+        if len(actual) != len(expected) or not actual.equals(expected):
+            missing = expected.difference(actual)
+            unexpected = actual.difference(expected)
+            raise ValueError(
+                f"{label} does not contain complete years: {int(year)} needs "
+                f"{len(expected)} unique contiguous hourly rows; got "
+                f"{len(actual)} unique rows ({len(missing)} missing, "
+                f"{len(unexpected)} unexpected)"
+            )
+    for col in columns:
+        if col in frame.columns and frame[col].isna().any():
+            raise ValueError(
+                f"{label} has missing values in '{col}'; refusing to treat "
+                "them as zero annual energy"
+            )
 
 
 def fit_annual_factors(
@@ -365,7 +431,10 @@ def fit_annual_factors(
         if level == 50:
             factors[level] = 1.0
             continue
-        q = (100.0 - level) / 100.0 if side == "lower" else level / 100.0
+        # AUDIT FIX (P1) - for the upper side the level is an exceedance
+        # level, so P10 is the 90th percentile (q=0.90), not the 10th.
+        # The CLI mirrors 50/75/90 to 50/25/10 before calling this function.
+        q = (100.0 - level) / 100.0 if side == "lower" else 1.0 - level / 100.0
         value = float(annual.quantile(q))
         factors[level] = value / reference if reference > 0.0 else 1.0
     return AnnualFactorCalibration(
@@ -390,6 +459,7 @@ def fit_exceedance_calibration(
     shrinkage: float = 50.0,
     zero_floor: float = 1e-6,
     calibrate_p50: bool = False,
+    side: str = "lower",
     month=None,
     hour=None,
     dayofyear=None,
@@ -404,6 +474,9 @@ def fit_exceedance_calibration(
     method = str(method).lower()
     if method not in ("additive", "multiplicative"):
         raise ValueError("method must be 'additive' or 'multiplicative'")
+    side = str(side).lower()
+    if side not in ("lower", "upper"):
+        raise ValueError("side must be 'lower' or 'upper'")
     group_cols = tuple(group_cols)
     for col in group_cols:
         if col not in VALID_GROUPS:
@@ -486,6 +559,7 @@ def fit_exceedance_calibration(
         shrinkage=float(shrinkage),
         zero_floor=float(zero_floor),
         calibrate_p50=bool(calibrate_p50),
+        side=side,
     )
 
 
@@ -852,6 +926,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     outdir.mkdir(parents=True, exist_ok=True)
 
     levels = tuple(int(v.strip()) for v in args.levels.split(",") if v.strip())
+    if args.mode == "annual" and args.calibrate_p50:
+        # AUDIT FIX (P6) - do not silently ignore the flag in annual mode.
+        print(
+            "    note: --calibrate-p50 has no effect in annual mode; the P50 "
+            "factor is 1.0 by construction. Use hourly mode for a P50 bias "
+            "correction."
+        )
     if args.side == "upper":
         # P90 upper means the 90th percentile, i.e. q=0.90.  The calibration
         # object stores the quantile to use as (100-level)/100, so mirror the
@@ -890,6 +971,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     def fit(frame: pd.DataFrame, name: str) -> Any:
         if args.mode == "annual":
+            _require_complete_annual_frame(
+                frame, label=f"{name} forecast training sample",
+                columns=("actual", "p50"),
+            )
             return fit_annual_factors(
                 frame["actual"], frame["time"].dt.year.to_numpy(), target=name,
                 levels=levels, side=args.side, min_years=args.annual_min_years,
@@ -898,7 +983,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             frame["actual"], frame["p50"], target=name, levels=levels,
             group_cols=groups, method=args.residual,
             min_samples=args.min_samples, shrinkage=args.shrinkage,
-            calibrate_p50=args.calibrate_p50,
+            calibrate_p50=args.calibrate_p50, side=args.side,
             month=frame["month"].to_numpy() if "month" in groups else None,
             hour=frame["hour"].to_numpy() if "hour" in groups else None,
             dayofyear=frame["dayofyear"].to_numpy() if "dayofyear" in groups else None,
@@ -920,6 +1005,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             total_actual = (joined_train["actual_solar"] + joined_train["actual_wind"]).to_numpy()
             total_p50 = (joined_train["p50_solar"] + joined_train["p50_wind"]).to_numpy()
             if args.mode == "annual":
+                _require_complete_annual_frame(
+                    joined_train, label="joint training sample",
+                    columns=("actual_solar", "actual_wind", "p50_solar", "p50_wind"),
+                )
                 joint_cal = fit_annual_factors(
                     total_actual, joined_train["time"].dt.year.to_numpy(),
                     target="solar+wind_MWh", levels=levels, side=args.side,
@@ -930,7 +1019,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     total_actual, total_p50, target="solar+wind_MWh", levels=levels,
                     group_cols=groups, method=args.residual,
                     min_samples=args.min_samples, shrinkage=args.shrinkage,
-                    calibrate_p50=args.calibrate_p50,
+                    calibrate_p50=args.calibrate_p50, side=args.side,
                     month=joined_train["month_solar"].to_numpy() if "month" in groups else None,
                     hour=joined_train["hour_solar"].to_numpy() if "hour" in groups else None,
                     dayofyear=joined_train["dayofyear_solar"].to_numpy() if "dayofyear" in groups else None,
@@ -947,14 +1036,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if str(args.annual_actual).lower().endswith(".csv") \
             else pd.read_excel(args.annual_actual)
         annual_df = _time_columns(annual_df, args.time_col)
+        _require_complete_annual_frame(
+            annual_df, label=f"--annual-actual {args.annual_actual}",
+            columns=(args.annual_solar_col, args.annual_wind_col),
+        )
         annual_years = annual_df["time"].dt.year.to_numpy()
         if args.annual_solar_col not in annual_df.columns:
             raise ValueError(
                 f"annual actual file has no '{args.annual_solar_col}' column"
             )
+        # AUDIT FIX (P10) - refusing to mix a long-run solar fit with a wind
+        # fit taken from the short forecast window.
+        if wind is not None and args.annual_wind_col not in annual_df.columns:
+            raise ValueError(
+                f"--annual-actual is missing '{args.annual_wind_col}', but a "
+                "wind forecast was supplied. Add the column or omit the wind "
+                "file; mixing calibration sources is not allowed."
+            )
         solar_actual = pd.to_numeric(
             annual_df[args.annual_solar_col], errors="coerce"
-        ).fillna(0.0).to_numpy()
+        ).to_numpy()
         solar_cal = fit_annual_factors(
             solar_actual, annual_years, target="solar_MWh", levels=levels,
             side=args.side, min_years=args.annual_min_years,
@@ -964,7 +1065,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if wind is not None and args.annual_wind_col in annual_df.columns:
             wind_actual = pd.to_numeric(
                 annual_df[args.annual_wind_col], errors="coerce"
-            ).fillna(0.0).to_numpy()
+            ).to_numpy()
             wind_cal = fit_annual_factors(
                 wind_actual, annual_years, target="wind_MWh", levels=levels,
                 side=args.side, min_years=args.annual_min_years,
@@ -982,6 +1083,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if cal is not None:
                 print(f"    {name:<6} factors "
                       + ", ".join(f"P{k}={v:.4f}" for k, v in sorted(cal.factors.items())))
+
+    # AUDIT FIX (P4) - record what the annual factors were actually fitted on,
+    # separately from the forecast train years. Previously `train_years`
+    # (2020-2022) was read as the annual sample even though the factors used
+    # the 2015-2024 annual record.
+    annual_fit_source = None
+    annual_fit_years: List[int] = []
+    if args.mode == "annual":
+        annual_fit_source = (
+            str(args.annual_actual)
+            if args.annual_actual
+            else "forecast training window"
+        )
+        _fit_years = set()
+        for _cal in (solar_cal, wind_cal, joint_cal):
+            if _cal is not None and hasattr(_cal, "annual_by_year"):
+                _fit_years.update(int(y) for y in _cal.annual_by_year)
+        annual_fit_years = sorted(_fit_years)
 
     # Score on the requested test window (or the whole file when omitted).
     solar_eval = solar_test if test_years is not None else solar
@@ -1055,6 +1174,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "wind_file": str(args.wind_pred) or None,
         "train_years": train_years,
         "test_years": test_years,
+        "annual_fit_source": annual_fit_source,
+        "annual_fit_years": annual_fit_years,
         "levels": list(levels),
         "mode": args.mode,
         "side": args.side,

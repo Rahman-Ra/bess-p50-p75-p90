@@ -36,11 +36,23 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from run_experiment import load_app, slice_frame
+from run_experiment import load_app, load_validated_input, slice_frame
 
 
 def parse_peak_hours(text: str) -> List[int]:
-    return [int(v.strip()) for v in str(text).split(",") if v.strip()]
+    """Unique valid clock hours, matching bess_app_v6.parse_peak_hours."""
+    out: List[int] = []
+    for token in str(text).split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            hour = int(token)
+        except ValueError:
+            continue
+        if 0 <= hour <= 23 and hour not in out:
+            out.append(hour)
+    return sorted(out)
 
 
 def build_params(app, args) -> Any:
@@ -219,8 +231,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print("=" * 72)
 
     for label, path in zip(labels, paths):
-        frame = pd.read_csv(path) if str(path).lower().endswith(".csv") \
-            else pd.read_excel(path)
+        frame = load_validated_input(app, path)
         frame = slice_frame(frame, args.start, args.hours)
         kpis, diag = run_one(app, frame, params, optimizer, args.engine)
         row: Dict[str, Any] = {

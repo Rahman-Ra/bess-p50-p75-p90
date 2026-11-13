@@ -238,6 +238,24 @@ def slice_frame(df: pd.DataFrame, start: int, hours: int) -> pd.DataFrame:
     return df.reset_index(drop=True).copy()
 
 
+def load_validated_input(app, path) -> pd.DataFrame:
+    """Read a BESSTOOL input and run the app's own validator.
+
+    AUDIT FIX (P3) - the CLI runners used to bypass `validate_input_frame`,
+    so an unsorted or duplicated file was sliced positionally and dispatched
+    in file order. Every path now goes through the same contract checks.
+    """
+    frame = pd.read_csv(path) if str(path).lower().endswith(".csv") \
+        else pd.read_excel(path)
+    clean, errors, warnings = app.validate_input_frame(frame)
+    if errors:
+        detail = "\n  - ".join(errors)
+        raise SystemExit(f"{path} is not a valid BESSTOOL_INPUT file:\n  - {detail}")
+    for warning in warnings:
+        print(f"    WARNING: {warning}")
+    return clean
+
+
 def merge_forecast_inputs(
     base: pd.DataFrame, paths: list[Path], start: int
 ) -> tuple[pd.DataFrame, list[str]]:
@@ -322,8 +340,7 @@ def main(argv=None) -> int:
     outdir.mkdir(parents=True, exist_ok=True)
 
     app = load_app()
-    df = pd.read_csv(args.input) if str(args.input).lower().endswith(".csv") \
-        else pd.read_excel(args.input)
+    df = load_validated_input(app, args.input)
     df = slice_frame(df, args.start, args.hours)
 
     params = build_params(app, args)

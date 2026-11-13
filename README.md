@@ -3,7 +3,10 @@
 This package contains the BESS dispatch app, the P50 → P75/P90 scenario
 analysis, and the fixes for the nine review findings. The current app is
 **`bess_app_v6.py`**. The previously reviewed `bess_app_v5.py` is kept
-unchanged as the audited baseline.
+unchanged as the audited baseline. An independent re-audit then checked the
+whole app, the scenario pipeline and the CLI runners; every confirmed finding
+from those passes is also fixed and recorded in `FLAW_FIXES.md` and
+`rahman_bess_flaws_completed.xlsx` (35 tracked items).
 
 ## Live app (public, no login)
 
@@ -24,11 +27,14 @@ engine and Excel download.
 2. Add conversion logic to change those P50 inputs into **P75** and **P90**.
 3. Explain the method and show how to implement it.
 4. Fix the nine issues returned in review.
+5. Re-audit every path, fix any additional confirmed defect, and provide a
+   completion workbook with recheck evidence.
 
 ## The nine review findings
 
 All nine are fixed in `bess_app_v6.py`. The full evidence is in
-[`FLAW_FIXES.md`](FLAW_FIXES.md).
+[`FLAW_FIXES.md`](FLAW_FIXES.md); section 10 there lists the additional
+findings from the independent re-audit.
 
 | # | Finding | Fix |
 |---|---|---|
@@ -41,13 +47,14 @@ All nine are fixed in `bess_app_v6.py`. The full evidence is in
 | 7 | No chronological sort after load | Stable sort in `validate_input_frame`, used by every path |
 | 8 | `fallback_windows` diagnostics overwritten | Numeric diagnostics aggregated across windows |
 | 9 | MILP had look-ahead | Causal 24-h-lag forecast, true receding horizon, physical settlement |
+| 10 | Independent re-audit findings (R1–R8, M1–M8, m1–m9, P1–P11) | Grid-import/SoC accounting, split complementarity, penalty base, self-discharge, cycle reporting, input validation, annual upper-side ordering, CLI validation and metadata; all confirmed findings fixed |
 
 ## What is included
 
 | File | Purpose |
 |---|---|
-| `bess_app_v6.py` | **Use this one.** Single file: Streamlit BESS app with the P50/P75/P90 selector, embedded calibration, and all nine fixes. |
-| `bess_app_v5.py` | Audited baseline from the previous review. Kept unchanged so the review line numbers stay valid; it does **not** contain the nine fixes. |
+| `bess_app_v6.py` | **Use this one.** Single file: Streamlit BESS app with the P50/P75/P90 selector, embedded calibration, and all review-plus-re-audit fixes. |
+| `bess_app_v5.py` | Audited baseline from the previous review. Kept unchanged so the review line numbers stay valid; it does **not** contain the fixes. |
 | `bess_app_v4_fixed.py` | Older app without the embedded calibration: reads P75/P90 columns that already exist in the upload. |
 | `quantile_scenarios.py` | Fits and applies the P50 → P75/P90 conversion; writes battery-ready input files. |
 | `run_scenario_experiment.py` | Runs the rule/MILP battery engine on P50, P75 and P90 and compares KPIs. |
@@ -120,7 +127,7 @@ python run_scenario_experiment.py `
 
 Add `--hours 720` for a one-month check before a full-year run. Use
 `--engine milp` for the receding-horizon optimiser. The MILP defaults to the
-**causal** information set; add `--forecast oracle` for the perfect-foresight
+**causal** information set; add `--forecast-mode oracle` for the perfect-foresight
 benchmark.
 
 ## How the conversion works
@@ -241,15 +248,16 @@ the value of the forecast.
 ## Verification
 
 ```text
-python -m pytest -q test_quantile_scenarios.py
-# 10 passed
+python -m pytest -q test_quantile_scenarios.py test_audit_fixes.py
+# 29 passed
 
 F1/F2, F3, F4, F5, F6, F7, F8, F9, F9 peak-charge  all PASS
 UI integration (rule, causal MILP, split block, oracle, settings)  PASS
 ```
 
 The app compiles and imports cleanly. `FLAW_FIXES.md` lists what each check
-proves.
+proves; `test_audit_fixes.py` pins the independent re-audit fixes and
+`test_quantile_scenarios.py` covers the scenario pipeline.
 
 ## Notes
 

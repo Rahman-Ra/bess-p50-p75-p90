@@ -85,9 +85,59 @@ class BESSParams:
 
 
 def parse_peak_hours(s: str) -> List[int]:
+    """Parse a comma-separated peak-hour list.
+
+    AUDIT FIX (R5/m7) - duplicate and out-of-range hours used to inflate the
+    daily/monthly required demand even though they can never match a row.
+    Keep only unique valid clock hours, in chronological order.
+    """
     if not s or not s.strip():
         return []
-    return [int(x.strip()) for x in s.split(",") if x.strip()]
+    out: List[int] = []
+    for token in s.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            hour = int(token)
+        except ValueError:
+            continue
+        if 0 <= hour <= 23 and hour not in out:
+            out.append(hour)
+    return sorted(out)
+
+
+def sanitize_bess_params(p: "BESSParams") -> "BESSParams":
+    """Clamp physically invalid values before any engine touches them.
+
+    AUDIT FIX (R6/m8) - the UI now prevents negative capacities, but the
+    engines are also called directly by the CLI runners and tests. A negative
+    contract used to produce negative exports and inflated curtailment.
+    """
+    lo, hi = float(p.min_soc_pct), float(p.max_soc_pct)
+    lo, hi = (lo, hi) if lo <= hi else (hi, lo)
+    peak = sorted(
+        {int(h) for h in (p.peak_hours or []) if 0 <= int(h) <= 23}
+    )
+    return replace(
+        p,
+        solar_cap_mw=max(float(p.solar_cap_mw), 0.0),
+        wind_cap_mw=max(float(p.wind_cap_mw), 0.0),
+        contract_mw=max(float(p.contract_mw), 0.0),
+        bess_energy_mwh=max(float(p.bess_energy_mwh), 0.0),
+        pcs_power_mw=max(float(p.pcs_power_mw), 0.0),
+        solar_bess_energy_mwh=max(float(p.solar_bess_energy_mwh), 0.0),
+        solar_pcs_power_mw=max(float(p.solar_pcs_power_mw), 0.0),
+        wind_bess_energy_mwh=max(float(p.wind_bess_energy_mwh), 0.0),
+        wind_pcs_power_mw=max(float(p.wind_pcs_power_mw), 0.0),
+        eta_charge=min(max(float(p.eta_charge), 1e-6), 1.0),
+        eta_discharge=min(max(float(p.eta_discharge), 1e-6), 1.0),
+        min_soc_pct=min(max(lo, 0.0), 100.0),
+        max_soc_pct=min(max(hi, 0.0), 100.0),
+        initial_soc_pct=min(max(float(p.initial_soc_pct), 0.0), 100.0),
+        solar_contract_share=min(max(float(p.solar_contract_share), 0.0), 1.0),
+        peak_hours=peak,
+    )
 
 
 def load_degradation_profile(uploaded_file) -> pd.Series:
@@ -115,21 +165,41 @@ def load_degradation_profile(uploaded_file) -> pd.Series:
             st.warning("Degradation profile has no Cap_factor column; using 1.0.")
             return pd.Series(1.0, index=idx)
 
+    # AUDIT FIX (M7) - coerce, clamp and de-duplicate before indexing. A
+    # Cap_factor of 95 used to mean 95x capacity, and a duplicate Year_index
+    # made `.set_index`/`reindex` raise.
+    df = df.copy()
+    df["Cap_factor"] = pd.to_numeric(df["Cap_factor"], errors="coerce")
+    df["Cap_factor"] = df["Cap_factor"].fillna(1.0).clip(0.0, 1.0)
     if "Year_index" not in df.columns:
         st.warning("Degradation profile has no Year_index column; using 1..25 with Cap_factor[0].")
-        base_val = float(df["Cap_factor"].iloc[0])
+        base_val = float(df["Cap_factor"].iloc[0]) if len(df) else 1.0
         return pd.Series(base_val, index=idx)
 
-    prof = df.set_index("Year_index")["Cap_factor"]
+    df["Year_index"] = pd.to_numeric(df["Year_index"], errors="coerce")
+    df = df.dropna(subset=["Year_index"])
+    df["Year_index"] = df["Year_index"].round().astype(int)
+    # Last row wins on duplicate years rather than crashing.
+    prof = df.drop_duplicates(subset=["Year_index"], keep="last").set_index(
+        "Year_index"
+    )["Cap_factor"]
 
-    # If user used 0–24 indexing, shift to 1–25
-    if prof.index.min() == 0 and prof.index.max() == 24:
-        prof.index = prof.index + 1
+    # AUDIT FIX (M7) - recognise both profile conventions:
+    #   * 0..24 (full) or any shorter 0..N  -> shift by one to 1-based
+    #   * a 1-based 1..25 file with an extra accidental 0 row -> drop the 0
+    # The old test (`min == 0 and max == 24`) missed short 0-based files; a
+    # plain "1 is present, so drop 0" test incorrectly shifted a full 0..24
+    # file by dropping its first year.
+    if len(prof) and int(prof.index.min()) == 0:
+        if int(prof.index.max()) >= 25:
+            prof = prof.drop(index=0)
+        else:
+            prof.index = prof.index + 1
 
     # Reindex to 1..25; fill gaps with forward/backward fill then 1.0 as last
     # resort. `.ffill()` / `.bfill()` replace the `method=` argument, which was
     # deprecated in pandas 2.1 and removed in pandas 3.x.
-    prof = prof.reindex(idx)
+    prof = prof.sort_index().reindex(idx)
     if prof.isna().any():
         prof = prof.ffill().bfill().fillna(1.0)
 
@@ -149,7 +219,7 @@ def ensure_hour_int(df: pd.DataFrame) -> pd.DataFrame:
 # -----------------------------
 # FIX 4 - input contract validation
 # -----------------------------
-REQUIRED_INPUT_COLUMNS = ("Year", "Day", "Month", "Hour", "solar_MWh", "wind_MWh")
+REQUIRED_INPUT_COLUMNS = ("Year", "Day", "Month", "Hour")
 
 
 def validate_input_frame(
@@ -191,6 +261,31 @@ def validate_input_frame(
     if errors:
         return df, errors, warnings
 
+    # AUDIT FIX (R7/m6) - a file may supply the generation basis as
+    # `solar_p50_MWh` / `wind_p50_MWh` instead of `solar_MWh` / `wind_MWh`.
+    # Promote the P50 basis to the realised columns; the P75/P90 conversion
+    # then still runs when only P50 is present.
+    for tech in ("solar", "wind"):
+        real = f"{tech}_MWh"
+        if real in df.columns:
+            continue
+        p50 = next(
+            (c for c in (f"{tech}_p50_MWh", f"{tech}_P50_MWh") if c in df.columns),
+            None,
+        )
+        if p50 is not None:
+            df[real] = df[p50]
+            warnings.append(
+                f"Column '{real}' was built from '{p50}' (P50 generation basis)."
+            )
+        else:
+            errors.append(
+                f"Missing generation column: supply either '{real}' or "
+                f"'{tech}_p50_MWh'."
+            )
+    if errors:
+        return df, errors, warnings
+
     # --- numeric coercion --------------------------------------------------
     for col in ("Year", "Month", "Day", "Hour"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -221,6 +316,13 @@ def validate_input_frame(
         errors.append("Column 'Day' must be in 1..31.")
     if not bool(df["Hour"].between(0, 23).all()):
         errors.append("Column 'Hour' must be in 0..23 (0 = midnight).")
+    # AUDIT FIX (m1) - reject fractional hours before the integer cast, which
+    # used to turn 5.5 into 5 and hide a duplicate key.
+    _frac_hour = (df["Hour"] - df["Hour"].round()).abs() > 1e-9
+    if bool(_frac_hour.any()):
+        errors.append(
+            f"{int(_frac_hour.sum())} row(s) have a non-integer Hour value."
+        )
 
     # --- duplicated hour keys ----------------------------------------------
     dup = df.duplicated(subset=["Year", "Month", "Day", "Hour"], keep=False)
@@ -410,10 +512,8 @@ def apply_generation_scenario(
 # ---------------------------------------------------------------------------
 # Embedded P50 -> P75/P90 conversion (single-file build)
 # ---------------------------------------------------------------------------
-# Fitted on the joint solar+wind series by
-# quantile_scenarios.fit_annual_factors / fit_exceedance_calibration.
-# annual factors : 2015-2024 (10 annual energies), fitted per technology
-# hourly residuals: forecast residuals over 2020-2022, tested __HOURLY_TEST__
+# Annual factors fitted per technology on 2015-2024 annual energies.
+# Hourly residuals fitted on the joint solar+wind forecast-error series.
 # Embedded so this file works on its own: upload a plain P50 BESSTOOL_INPUT
 # and the app can still build P75/P90.
 #
@@ -777,6 +877,9 @@ def build_generation_scenarios(
         # Enforce P90 <= P75 <= P50 per technology even if a factor file is
         # edited by hand (the fitted factors already satisfy this).
         for tech in ("solar", "wind"):
+            out[f"{tech}_p75_MWh"] = np.minimum(
+                out[f"{tech}_p75_MWh"], out[f"{tech}_p50_MWh"]
+            )
             out[f"{tech}_p90_MWh"] = np.minimum(
                 out[f"{tech}_p90_MWh"], out[f"{tech}_p75_MWh"]
             )
@@ -813,8 +916,9 @@ def build_generation_scenarios(
 
 
 def scenario_columns_present(df: pd.DataFrame) -> bool:
-    """True when the upload already carries P75/P90 scenario columns."""
-    return bool(available_generation_scenarios(df))
+    """True when the upload already carries P75 or P90 scenario columns."""
+    found = available_generation_scenarios(df)
+    return any(level in found for level in (75, 90))
 
 
 def apply_grid_limit(energy: float, grid_limit_mw: Optional[float]) -> Tuple[float, float]:
@@ -894,11 +998,11 @@ def apply_custom_formulas(
         if not new_col or not formula:
             continue
         try:
-            df[new_col] = pd.eval(
-                formula,
-                local_dict=context,
-                engine="python",
-            )
+            # AUDIT FIX (M8) - `pd.eval(engine="python")` cannot call NumPy
+            # ufuncs, so the documented `np.maximum`/`np.where` formulas
+            # silently produced no column. Plain eval with an empty builtins
+            # namespace supports them and still only sees the supplied context.
+            df[new_col] = eval(formula, {"__builtins__": {}}, context)  # noqa: S307
             context[new_col] = df[new_col]
         except Exception as e:
             st.warning(f"Could not compute '{new_col}': {e}")
@@ -926,6 +1030,7 @@ def simulate_single_site(
         * Remaining generation goes to grid, capped by grid_limit_mw if set.
         * Any excess is counted as Curtailed_MWh.
     """
+    p = sanitize_bess_params(p)
     eta_ch = p.eta_charge
     eta_dis = p.eta_discharge
 
@@ -949,6 +1054,7 @@ def simulate_single_site(
     df["BESS_Charge_Loss_MWh"] = 0.0
     df["BESS_Discharge_MWh"] = 0.0
     df["BESS_TotalCycles"] = 0.0
+    df["Grid_Import_MWh"] = 0.0  # rule engine never imports from the grid
 
     # Flows to grid
     df["solar_to_grid_MWh"] = 0.0
@@ -1145,6 +1251,7 @@ def simulate_split_site(
         * Each site charges its own BESS first, then remaining solar+wind goes to grid.
         * Grid export limit is applied on combined solar+wind export.
     """
+    p = sanitize_bess_params(p)
     eta_ch = p.eta_charge
     eta_dis = p.eta_discharge
 
@@ -1190,6 +1297,7 @@ def simulate_split_site(
     out["BESS_to_Grid_MWh"] = 0.0       # solar_bess_discharge + wind_bess_discharge
     out["Total_Supplied_MWh"] = 0.0
     out["Curtailed_MWh"] = 0.0
+    out["Grid_Import_MWh"] = 0.0  # grid charging is only available in MILP mode
 
     out["Peak_Time_Energy_Supplied_MWh"] = 0.0
     out["Offpeak_Supplied_MWh"] = 0.0
@@ -1252,16 +1360,22 @@ def simulate_split_site(
             # judged against its own target, so a surplus in one cannot hide a
             # shortfall in the other. (Previously the share was hardcoded and,
             # worse, never read: the split engine used one combined contract.)
+            # AUDIT FIX (M4/R3) - the export target respects the grid cap, but
+            # the contractual penalty is measured against the full contract,
+            # exactly as the single-site engine does. Previously a grid cap
+            # below the contract hid part of the unavoidable shortfall.
+            penalty_contract = max(float(p.contract_mw), 0.0)
             if p.grid_limit_mw is None:
-                effective_contract = max(float(p.contract_mw), 0.0)
+                export_contract = penalty_contract
             else:
-                effective_contract = min(
-                    max(float(p.contract_mw), 0.0),
-                    max(float(p.grid_limit_mw), 0.0),
+                export_contract = min(
+                    penalty_contract, max(float(p.grid_limit_mw), 0.0)
                 )
             share = float(np.clip(p.solar_contract_share, 0.0, 1.0))
-            solar_target = effective_contract * share
-            wind_target = effective_contract * (1.0 - share)
+            solar_target = export_contract * share
+            wind_target = export_contract * (1.0 - share)
+            solar_pen_target = penalty_contract * share
+            wind_pen_target = penalty_contract * (1.0 - share)
 
             # 1) Each technology exports its own generation against its own
             #    contract target; generation above that target is curtailed.
@@ -1305,8 +1419,8 @@ def simulate_split_site(
             solar_export = solar_to_grid_from_gen + solar_discharge
             wind_export = wind_to_grid_from_gen + wind_discharge
             peak_supplied = solar_export + wind_export
-            penalty = max(solar_target - solar_export, 0.0) + max(
-                wind_target - wind_export, 0.0
+            penalty = max(solar_pen_target - solar_export, 0.0) + max(
+                wind_pen_target - wind_export, 0.0
             )
 
             solar_to_grid = solar_to_grid_from_gen
@@ -1436,7 +1550,10 @@ def simulate_split_site(
 # -----------------------------
 def make_daily_penalty(df: pd.DataFrame, p: BESSParams) -> pd.DataFrame:
     peak_df = df[df["is_peak"] == 1].copy()
-    peak_hours_per_day = len(p.peak_hours)
+    # AUDIT FIX (R5/m7) - only unique, valid clock hours can contribute demand.
+    peak_hours_per_day = len(
+        sorted({int(h) for h in (p.peak_hours or []) if 0 <= int(h) <= 23})
+    )
 
     group_cols = ["Year", "Month", "Day"]
     daily = (
@@ -2140,11 +2257,14 @@ def apply_causal_spike_filter(
     std = hist_std.fillna(warm_std)
 
     # Degenerate (flat) history -> use a positive floor so the clip stays sane.
-    global_std = float(s.std()) if len(s) > 1 else 0.0
-    if not np.isfinite(global_std) or global_std <= 0.0:
-        return s.to_numpy()
-    fallback = pd.Series(global_std, index=s.index)
-    std = std.where(std.notna() & (std > 0.0), fallback)
+    # AUDIT FIX (m4) - do not fall back to the full-sample standard deviation;
+    # that would leak future information into the warm-up rows. Rows without
+    # enough strictly-prior history are left unclipped.
+    valid = med.notna() & std.notna() & (std > 0.0)
+    lower = (med - k * std).where(valid, -np.inf)
+    upper = (med + k * std).where(valid, np.inf)
+
+    return s.clip(lower=lower, upper=upper).to_numpy()
 
     return s.clip(lower=med - k * std, upper=med + k * std).to_numpy()
 
@@ -2220,6 +2340,7 @@ def _peak_export_caps(
     """
     caps = np.empty(len(peak), dtype=float)
     grid_cap = None if grid_limit_mw is None else max(float(grid_limit_mw), 0.0)
+    contract_mw = max(float(contract_mw), 0.0)
 
     for i in range(len(peak)):
         if grid_cap is None:
@@ -2436,6 +2557,7 @@ def simulate_optimized_single_site(
     The output schema is byte-for-byte the same as `simulate_single_site`, so the
     existing aggregation functions can consume it without modification.
     """
+    p = sanitize_bess_params(p)
     solver, solver_label = resolve_solver(o.solver, o.time_limit_s, o.mip_gap, o.msg)
     use_binaries, bin_reason = needs_complementarity(p, o)
 
@@ -2468,6 +2590,7 @@ def simulate_optimized_single_site(
         ("BESS_Charge_Loss_MWh", 0.0),
         ("BESS_Discharge_MWh", 0.0),
         ("BESS_TotalCycles", 0.0),
+        ("Grid_Import_MWh", 0.0),
         ("solar_to_grid_MWh", 0.0),
         ("wind_to_grid_MWh", 0.0),
         ("GenPlant_to_Grid_MWh", 0.0),
@@ -2573,6 +2696,7 @@ def simulate_optimized_single_site(
             soc, cum_throughput = _write_single_block(
                 df, start, commit, sol, p, cap_factor, soc, cum_throughput,
                 oracle=str(o.forecast_mode).lower() != "causal",
+                rho=1.0 - max(0.0, min(0.999, float(o.self_discharge_per_hour))),
             )
             if diag["objective_first_window"] is None:
                 diag["objective_first_window"] = sol.get("objective")
@@ -2651,9 +2775,16 @@ def _optimize_single_window(
     m += e[0] == e0, "initial_soc"
 
     for t in range(T):
-        m += g[t] + d[t] - imp[t] <= caps[t] + 1e-7, f"export_cap_{t}"
+        # AUDIT FIX (R8) - the grid cap applies to gross export, exactly as in
+        # the rule-based engine and in `_write_single_block`. The previous
+        # net-of-import form let an hour import and export at the same time and
+        # made oracle settlement disagree with the optimiser's own plan.
+        m += g[t] + d[t] <= caps[t] + 1e-7, f"export_cap_{t}"
         m += g[t] + c[t] <= gen[t] + 1e-7, f"plant_balance_{t}"
         m += c[t] + imp[t] <= p_pcs + 1e-7, f"pcs_charge_{t}"
+        if p.grid_limit_mw is not None:
+            # The same connection also limits imports when grid charging is on.
+            m += imp[t] <= max(float(p.grid_limit_mw), 0.0) + 1e-7, f"import_cap_{t}"
 
         if not o.allow_grid_charging:
             m += imp[t] <= 1e-7, f"no_grid_import_{t}"
@@ -2678,7 +2809,13 @@ def _optimize_single_window(
             m += pen[t] >= p.contract_mw - (g[t] + d[t]), f"pen_def_{t}"
 
     if o.terminal_soc_pct is not None:
-        m += e[T] >= eff_cap * (float(o.terminal_soc_pct) / 100.0) - 1e-7, "terminal_soc"
+        # AUDIT FIX (R2/M3) - a terminal target outside the operating band is
+        # infeasible. Clamp it instead of making every window fail silently.
+        _ts_pct = min(
+            max(float(o.terminal_soc_pct), float(p.min_soc_pct)),
+            float(p.max_soc_pct),
+        )
+        m += e[T] >= eff_cap * (_ts_pct / 100.0) - 1e-7, "terminal_soc"
 
     if o.max_equivalent_cycles_per_year is not None and eff_cap > 0.0:
         step = max(min(o.step_hours, T), 1)
@@ -2709,6 +2846,9 @@ def _optimize_single_window(
             float(o.terminal_soc_pct)
             if o.terminal_soc_pct is not None
             else 0.5 * (float(p.min_soc_pct) + float(p.max_soc_pct))
+        )
+        _target_pct = min(
+            max(_target_pct, float(p.min_soc_pct)), float(p.max_soc_pct)
         )
         _target = eff_cap * (_target_pct / 100.0)
         _dev_pos = plp.LpVariable("term_dev_pos", lowBound=0.0)
@@ -2777,6 +2917,7 @@ def _write_single_block(
     soc_before: float,
     cum_throughput_before: float,
     oracle: bool = False,
+    rho: float = 1.0,
 ) -> Tuple[float, float]:
     """
     Settle the committed part of a window against the realised generation.
@@ -2803,6 +2944,7 @@ def _write_single_block(
     eta_ch = float(p.eta_charge)
     eta_dis = float(p.eta_discharge)
     pcs = max(float(p.pcs_power_mw), 0.0)
+    rho = min(max(float(rho), 0.0), 1.0)
 
     n = commit
     planned_charge = np.maximum(sol["charge_in"][:n], 0.0)
@@ -2833,6 +2975,7 @@ def _write_single_block(
     charge_in = np.zeros(n, dtype=float)
     plant_charge_arr = np.zeros(n, dtype=float)
     discharge = np.zeros(n, dtype=float)
+    grid_import = np.zeros(n, dtype=float)
     gen_to_grid = np.zeros(n, dtype=float)
     curtailed = np.zeros(n, dtype=float)
     penalty = np.zeros(n, dtype=float)
@@ -2841,6 +2984,9 @@ def _write_single_block(
 
     for t in range(n):
         gen_t = float(gen[t])
+        # AUDIT FIX (M2) - settlement must replay the same self-discharge the
+        # optimiser planned; otherwise the two trajectories drift apart.
+        soc = rho * soc if eff_cap > 0 else 0.0
         if int(peak[t]) == 1:
             # ---- PEAK: honour planned charging, then BESS fills the shortfall ----
             # `no_charge_in_peak` normally zeroes peak charging inside the
@@ -2924,6 +3070,7 @@ def _write_single_block(
         charge_in[t] = charge
         plant_charge_arr[t] = charge_plant
         discharge[t] = dis
+        grid_import[t] = imp
         gen_to_grid[t] = g2g
         curtailed[t] = curt
         penalty[t] = pen
@@ -2963,6 +3110,7 @@ def _write_single_block(
     df.loc[iloc_idx, "BESS_Charge_to_SOC_MWh"] = charge_to_soc
     df.loc[iloc_idx, "BESS_Charge_Loss_MWh"] = charge_loss
     df.loc[iloc_idx, "BESS_Discharge_MWh"] = discharge
+    df.loc[iloc_idx, "Grid_Import_MWh"] = grid_import
     df.loc[iloc_idx, "solar_to_grid_MWh"] = s_to_grid
     df.loc[iloc_idx, "wind_to_grid_MWh"] = w_to_grid
     df.loc[iloc_idx, "GenPlant_to_Grid_MWh"] = gen_to_grid
@@ -2973,12 +3121,15 @@ def _write_single_block(
     df.loc[iloc_idx, "Offpeak_Supplied_MWh"] = np.where(peak == 0, total_supplied, 0.0)
     df.loc[iloc_idx, "Penalty_MWh"] = penalty
 
-    cum_throughput = float(cum_throughput_before) + float(
-        np.sum(charge_in) + np.sum(discharge) / max(eta_dis, 1e-9)
+    # AUDIT FIX (R4/M6) - report the cumulative cycle count at each settled
+    # hour, not the block-end value repeated on every row.
+    thr_steps = float(cum_throughput_before) + np.cumsum(
+        charge_in + discharge / max(eta_dis, 1e-9)
     )
     df.loc[iloc_idx, "BESS_TotalCycles"] = (
-        cum_throughput / (2.0 * eff_cap) if eff_cap > 0 else 0.0
+        thr_steps / (2.0 * eff_cap) if eff_cap > 0 else 0.0
     )
+    cum_throughput = float(thr_steps[-1]) if n > 0 else float(cum_throughput_before)
 
     # Return the settled SoC at the end of the committed block.
     return float(soc_out[-1]), cum_throughput
@@ -3006,6 +3157,7 @@ def simulate_optimized_split_site(
     solve on a causal forecast, settle the committed hours against realised
     generation, and carry the physical SoC/throughput to the next step.
     """
+    p = sanitize_bess_params(p)
     solver, solver_label = resolve_solver(o.solver, o.time_limit_s, o.mip_gap, o.msg)
     use_binaries, bin_reason = needs_complementarity(p, o)
 
@@ -3053,6 +3205,7 @@ def simulate_optimized_split_site(
         "BESS_to_Grid_MWh",
         "Total_Supplied_MWh",
         "Curtailed_MWh",
+        "Grid_Import_MWh",
         "Peak_Time_Energy_Supplied_MWh",
         "Offpeak_Supplied_MWh",
         "Penalty_MWh",
@@ -3166,6 +3319,7 @@ def simulate_optimized_split_site(
                 df, start, commit, sol, p, solar_cap_y, wind_cap_y,
                 solar_soc, wind_soc, cum_thr_s, cum_thr_w,
                 oracle=str(o.forecast_mode).lower() != "causal",
+                rho=1.0 - max(0.0, min(0.999, float(o.self_discharge_per_hour))),
             )
 
         if wi % 24 == 0 or wi == len(windows) - 1:
@@ -3206,18 +3360,22 @@ def _optimize_split_window(
     w_max = wind_cap_y * (p.max_soc_pct / 100.0)
     w_min = wind_cap_y * (p.min_soc_pct / 100.0)
 
-    # FLAW 6 FIX - split the contract between the two technologies. The same
-    # effective-contract rule as the rule-based split engine is used, so both
-    # engines judge each unit against the same target.
+    # AUDIT FIX (M4/R3) - the dispatch/export target respects the grid cap,
+    # but the penalty target is the full contractual share, matching the
+    # single-site engine. A grid cap below the contract is an unavoidable
+    # shortfall, not a reason to shrink the contract.
+    _pen_contract = max(float(p.contract_mw), 0.0)
     if p.grid_limit_mw is None:
-        _eff_contract = max(float(p.contract_mw), 0.0)
+        _eff_contract = _pen_contract
     else:
         _eff_contract = min(
-            max(float(p.contract_mw), 0.0), max(float(p.grid_limit_mw), 0.0)
+            _pen_contract, max(float(p.grid_limit_mw), 0.0)
         )
     _share = float(np.clip(p.solar_contract_share, 0.0, 1.0))
     solar_target = _eff_contract * _share
     wind_target = _eff_contract * (1.0 - _share)
+    solar_pen_target = _pen_contract * _share
+    wind_pen_target = _pen_contract * (1.0 - _share)
 
     e_s = [plp.LpVariable(f"es_{t}", lowBound=s_min, upBound=s_max) for t in range(T + 1)]
     e_w = [plp.LpVariable(f"ew_{t}", lowBound=w_min, upBound=w_max) for t in range(T + 1)]
@@ -3231,27 +3389,32 @@ def _optimize_split_window(
     dw = [plp.LpVariable(f"dw_{t}", lowBound=0.0, upBound=p_wind) for t in range(T)]
     gs = [plp.LpVariable(f"gs_{t}", lowBound=0.0, upBound=float(solar[t])) for t in range(T)]
     gw = [plp.LpVariable(f"gw_{t}", lowBound=0.0, upBound=float(wind[t])) for t in range(T)]
-    imp = [plp.LpVariable(f"imp_{t}", lowBound=0.0, upBound=p_solar + p_wind) for t in range(T)]
+    imp_s = [plp.LpVariable(f"imps_{t}", lowBound=0.0, upBound=p_solar) for t in range(T)]
+    imp_w = [plp.LpVariable(f"impw_{t}", lowBound=0.0, upBound=p_wind) for t in range(T)]
     # FLAW 6 FIX - one shortfall variable per technology, each against its own
     # share of the contract, in peak hours only.
     pen_s = [
         plp.LpVariable(
             f"pens_{t}", lowBound=0.0,
-            upBound=solar_target if peak[t] == 1 else 0.0,
+            upBound=solar_pen_target if peak[t] == 1 else 0.0,
         )
         for t in range(T)
     ]
     pen_w = [
         plp.LpVariable(
             f"penw_{t}", lowBound=0.0,
-            upBound=wind_target if peak[t] == 1 else 0.0,
+            upBound=wind_pen_target if peak[t] == 1 else 0.0,
         )
         for t in range(T)
     ]
     cur_s = [plp.LpVariable(f"curs_{t}", lowBound=0.0, upBound=float(solar[t])) for t in range(T)]
     cur_w = [plp.LpVariable(f"curw_{t}", lowBound=0.0, upBound=float(wind[t])) for t in range(T)]
 
-    u = [plp.LpVariable(f"u_{t}", cat="Binary") for t in range(T)] if use_binaries else None
+    # AUDIT FIX (M1) - one complementarity binary per battery. A shared binary
+    # forced both units into the same mode, so solar could not charge while
+    # wind discharged and vice versa.
+    u_s = [plp.LpVariable(f"us_{t}", cat="Binary") for t in range(T)] if use_binaries else None
+    u_w = [plp.LpVariable(f"uw_{t}", cat="Binary") for t in range(T)] if use_binaries else None
 
     eta_ch = float(p.eta_charge)
     eta_dis = float(p.eta_discharge)
@@ -3268,32 +3431,39 @@ def _optimize_split_window(
     m += e_w[0] == float(np.clip(wind_soc_start, min(w_min, w_max), max(w_min, w_max)))
 
     for t in range(T):
-        # Grid exchange cap (identical semantics to the single-mode caps).
-        m += gs[t] + gw[t] + ds[t] + dw[t] - imp[t] <= caps[t] + 1e-7, f"export_cap_{t}"
+        # AUDIT FIX (R8) - gross export cap, same semantics as the rule engine.
+        m += gs[t] + gw[t] + ds[t] + dw[t] <= caps[t] + 1e-7, f"export_cap_{t}"
+        if p.grid_limit_mw is not None:
+            m += imp_s[t] + imp_w[t] <= max(float(p.grid_limit_mw), 0.0) + 1e-7, f"import_cap_{t}"
 
         # Each BESS may only absorb its own source.
         m += gs[t] + cs[t] <= solar[t] + 1e-7, f"solar_balance_{t}"
         m += gw[t] + cw[t] <= wind[t] + 1e-7, f"wind_balance_{t}"
 
         if not o.allow_grid_charging:
-            m += imp[t] <= 1e-7, f"no_grid_import_{t}"
+            m += imp_s[t] + imp_w[t] <= 1e-7, f"no_grid_import_{t}"
         if o.no_charge_in_peak and peak[t] == 1:
-            m += cs[t] + cw[t] + imp[t] <= 1e-7, f"no_peak_charge_{t}"
+            m += cs[t] + cw[t] + imp_s[t] + imp_w[t] <= 1e-7, f"no_peak_charge_{t}"
 
-        # Grid import can only serve the battery, split between the two PCS.
-        m += imp[t] <= p_solar + p_wind + 1e-7, f"pcs_charge_{t}"
+        # AUDIT FIX (R1) - grid import is attributed to the battery that
+        # absorbs it (solar PCS first in settlement) and must enter that
+        # battery's SoC balance. The old model left `imp` out of both balances,
+        # so split-mode grid charging was inert and imported energy vanished.
+        m += cs[t] + imp_s[t] <= p_solar + 1e-7, f"pcs_charge_s_{t}"
+        m += cw[t] + imp_w[t] <= p_wind + 1e-7, f"pcs_charge_w_{t}"
 
         m += (
-            e_s[t + 1] == rho * e_s[t] + eta_ch * cs[t] - inv_eta_dis * ds[t]
+            e_s[t + 1] == rho * e_s[t] + eta_ch * (cs[t] + imp_s[t]) - inv_eta_dis * ds[t]
         ), f"soc_s_{t}"
         m += (
-            e_w[t + 1] == rho * e_w[t] + eta_ch * cw[t] - inv_eta_dis * dw[t]
+            e_w[t + 1] == rho * e_w[t] + eta_ch * (cw[t] + imp_w[t]) - inv_eta_dis * dw[t]
         ), f"soc_w_{t}"
 
-        if u is not None:
-            m += cs[t] + imp[t] <= p_solar * u[t] + 1e-7, f"comp_chs_{t}"
-            m += cw[t] + imp[t] <= p_wind * u[t] + 1e-7, f"comp_chw_{t}"
-            m += ds[t] + dw[t] <= (p_solar + p_wind) * (1 - u[t]) + 1e-7, f"comp_dis_{t}"
+        if u_s is not None:
+            m += cs[t] + imp_s[t] <= p_solar * u_s[t] + 1e-7, f"comp_chs_{t}"
+            m += ds[t] <= p_solar * (1 - u_s[t]) + 1e-7, f"comp_ds_{t}"
+            m += cw[t] + imp_w[t] <= p_wind * u_w[t] + 1e-7, f"comp_chw_{t}"
+            m += dw[t] <= p_wind * (1 - u_w[t]) + 1e-7, f"comp_dw_{t}"
 
         m += cur_s[t] >= solar[t] - (gs[t] + cs[t]), f"curs_def_{t}"
         m += cur_w[t] >= wind[t] - (gw[t] + cw[t]), f"curw_def_{t}"
@@ -3305,20 +3475,33 @@ def _optimize_split_window(
         if peak[t] == 1:
             m += gs[t] + ds[t] <= solar_target + 1e-7, f"split_peak_s_{t}"
             m += gw[t] + dw[t] <= wind_target + 1e-7, f"split_peak_w_{t}"
-            m += pen_s[t] >= solar_target - (gs[t] + ds[t]), f"pen_s_def_{t}"
-            m += pen_w[t] >= wind_target - (gw[t] + dw[t]), f"pen_w_def_{t}"
+            m += pen_s[t] >= solar_pen_target - (gs[t] + ds[t]), f"pen_s_def_{t}"
+            m += pen_w[t] >= wind_pen_target - (gw[t] + dw[t]), f"pen_w_def_{t}"
 
     if o.terminal_soc_pct is not None:
-        m += e_s[T] >= solar_cap_y * (float(o.terminal_soc_pct) / 100.0) - 1e-7
-        m += e_w[T] >= wind_cap_y * (float(o.terminal_soc_pct) / 100.0) - 1e-7
+        # AUDIT FIX (R2/M3) - clamp the target into the feasible band.
+        _ts_pct = min(
+            max(float(o.terminal_soc_pct), float(p.min_soc_pct)),
+            float(p.max_soc_pct),
+        )
+        m += e_s[T] >= solar_cap_y * (_ts_pct / 100.0) - 1e-7
+        m += e_w[T] >= wind_cap_y * (_ts_pct / 100.0) - 1e-7
 
     if o.max_equivalent_cycles_per_year is not None:
         step = max(min(o.step_hours, T), 1)
         share = step / HOURS_IN_YEAR
         thr_s = plp.LpVariable("throughput_s", lowBound=0.0)
         thr_w = plp.LpVariable("throughput_w", lowBound=0.0)
-        m += thr_s == plp.lpSum(cs[t] + inv_eta_dis * ds[t] for t in range(T))
-        m += thr_w == plp.lpSum(cw[t] + inv_eta_dis * dw[t] for t in range(T))
+        # AUDIT FIX (final pass) - count grid-charged energy in the warranty
+        # budget, exactly as the single-site model and both settlement writers
+        # do. The old split constraint counted only plant charging, so a
+        # grid-charging run could exceed the cycle budget many times over.
+        m += thr_s == plp.lpSum(
+            cs[t] + imp_s[t] + inv_eta_dis * ds[t] for t in range(T)
+        )
+        m += thr_w == plp.lpSum(
+            cw[t] + imp_w[t] + inv_eta_dis * dw[t] for t in range(T)
+        )
         if solar_cap_y > 0.0:
             m += thr_s <= 2.0 * solar_cap_y * float(o.max_equivalent_cycles_per_year) * share + 1e-7
         if wind_cap_y > 0.0:
@@ -3335,6 +3518,10 @@ def _optimize_split_window(
             if o.terminal_soc_pct is not None
             else 0.5 * (float(p.min_soc_pct) + float(p.max_soc_pct)) / 100.0
         )
+        _ts_target = min(
+            max(_ts_target, float(p.min_soc_pct) / 100.0),
+            float(p.max_soc_pct) / 100.0,
+        )
         _pairs = (
             ("s", e_s, solar_cap_y * _ts_target),
             ("w", e_w, wind_cap_y * _ts_target),
@@ -3349,9 +3536,12 @@ def _optimize_split_window(
     m += plp.lpSum(
         o.w_penalty * (pen_s[t] + pen_w[t])
         + o.w_curtail * (cur_s[t] + cur_w[t])
-        + o.grid_import_price * imp[t]
-        + w_throughput * (cs[t] + cw[t] + inv_eta_dis * ds[t] + inv_eta_dis * dw[t])
-        - tariff[t] * (gs[t] + gw[t] + ds[t] + dw[t] - imp[t])
+        + o.grid_import_price * (imp_s[t] + imp_w[t])
+        + w_throughput * (
+            cs[t] + cw[t] + imp_s[t] + imp_w[t]
+            + inv_eta_dis * ds[t] + inv_eta_dis * dw[t]
+        )
+        - tariff[t] * (gs[t] + gw[t] + ds[t] + dw[t] - imp_s[t] - imp_w[t])
         for t in range(T)
     ) + term_cost
 
@@ -3372,7 +3562,9 @@ def _optimize_split_window(
         "dw": np.maximum(arr(dw), 0.0),
         "gs": np.clip(arr(gs), 0.0, np.maximum(solar, 0.0)),
         "gw": np.clip(arr(gw), 0.0, np.maximum(wind, 0.0)),
-        "imp": np.maximum(arr(imp), 0.0),
+        "imps": np.maximum(arr(imp_s), 0.0),
+        "impw": np.maximum(arr(imp_w), 0.0),
+        "imp": np.maximum(arr(imp_s), 0.0) + np.maximum(arr(imp_w), 0.0),
         "es": arr(e_s),
         "ew": arr(e_w),
         "es_end": arr(e_s)[1 : T + 1],
@@ -3397,6 +3589,7 @@ def _write_split_block(
     cum_thr_s: float = 0.0,
     cum_thr_w: float = 0.0,
     oracle: bool = False,
+    rho: float = 1.0,
 ) -> Tuple[float, float, float, float]:
     """Settle the committed part of a split window against realised generation.
 
@@ -3413,7 +3606,15 @@ def _write_split_block(
     plan_ds = np.maximum(sol["ds"][sl], 0.0)
     plan_cw = np.maximum(sol["cw"][sl], 0.0)
     plan_dw = np.maximum(sol["dw"][sl], 0.0)
-    plan_imp = np.maximum(sol["imp"][sl], 0.0)
+    # AUDIT FIX (R1) - the optimiser now reports the import assigned to each
+    # battery. Fall back to the old solar-first allocation for old pickles.
+    if "imps" in sol and "impw" in sol:
+        plan_imps = np.maximum(sol["imps"][sl], 0.0)
+        plan_impw = np.maximum(sol["impw"][sl], 0.0)
+    else:
+        _pi = np.maximum(sol["imp"][sl], 0.0)
+        plan_imps = np.minimum(_pi, plan_cs)
+        plan_impw = _pi - plan_imps
     # Planned plant exports, honoured only in oracle mode (see _write_single_block).
     plan_gs = np.maximum(sol["gs"][sl], 0.0)
     plan_gw = np.maximum(sol["gw"][sl], 0.0)
@@ -3426,6 +3627,7 @@ def _write_split_block(
     eta_dis = float(p.eta_discharge)
     pcs_s = max(float(p.solar_pcs_power_mw), 0.0)
     pcs_w = max(float(p.wind_pcs_power_mw), 0.0)
+    rho = min(max(float(rho), 0.0), 1.0)
 
     s_max = solar_cap_y * (p.max_soc_pct / 100.0)
     s_min = solar_cap_y * (p.min_soc_pct / 100.0)
@@ -3441,14 +3643,18 @@ def _write_split_block(
     )
 
     # FLAW 6: the contract is split between the technologies, so settlement must
-    # judge each against its own target.
+    # judge each against its own target. AUDIT FIX (M4/R3) - export target
+    # respects the grid cap; penalty target is the full contractual share.
     if grid_cap is None:
         _eff_contract = max(float(p.contract_mw), 0.0)
     else:
         _eff_contract = min(max(float(p.contract_mw), 0.0), grid_cap)
+    _pen_contract = max(float(p.contract_mw), 0.0)
     _share = float(np.clip(p.solar_contract_share, 0.0, 1.0))
     s_target = _eff_contract * _share
     w_target = _eff_contract * (1.0 - _share)
+    s_pen_target = _pen_contract * _share
+    w_pen_target = _pen_contract * (1.0 - _share)
 
     cs = np.zeros(n, dtype=float)
     cw = np.zeros(n, dtype=float)
@@ -3463,15 +3669,18 @@ def _write_split_block(
     es_out = np.zeros(n, dtype=float)
     ew_out = np.zeros(n, dtype=float)
     total_supplied = np.zeros(n, dtype=float)
+    grid_import_settled = np.zeros(n, dtype=float)
 
-    # Grid import is attributed to the solar PCS first (same convention as the
-    # optimiser's own settlement and the existing reporting split).
-    imp_s = np.minimum(plan_imp, plan_cs) if n else np.zeros(0)
-    imp_w = plan_imp - imp_s
+    # Grid import is assigned by the optimiser to the battery that absorbs it.
+    imp_s = plan_imps if n else np.zeros(0)
+    imp_w = plan_impw if n else np.zeros(0)
 
     for t in range(n):
         solar_t = float(solar[t])
         wind_t = float(wind[t])
+        # AUDIT FIX (M2) - same self-discharge replay as the single-site block.
+        solar_soc = rho * solar_soc if solar_cap_y > 0 else 0.0
+        wind_soc = rho * wind_soc if wind_cap_y > 0 else 0.0
 
         if int(peak[t]) == 1:
             # ---- PEAK: honour planned charging, then each BESS fills own gap ----
@@ -3527,8 +3736,8 @@ def _write_split_block(
             )
 
             curt = max(s_gen_avail - s2g, 0.0) + max(w_gen_avail - w2g, 0.0)
-            pen = max(s_target - (s2g + d_s), 0.0) + max(
-                w_target - (w2g + d_w), 0.0
+            pen = max(s_pen_target - (s2g + d_s), 0.0) + max(
+                w_pen_target - (w2g + d_w), 0.0
             )
         else:
             # ---- OFF-PEAK: each battery charges from its own source ----
@@ -3574,8 +3783,8 @@ def _write_split_block(
             )
 
             # Combined export cap applies to the two plants' own generation.
-            s_gen_avail = max(solar_t - c_s + imp_s_t, 0.0)
-            w_gen_avail = max(wind_t - c_w + imp_w_t, 0.0)
+            s_gen_avail = max(solar_t - cs_plant_t, 0.0)
+            w_gen_avail = max(wind_t - cw_plant_t, 0.0)
             total_gen_avail = s_gen_avail + w_gen_avail
             if oracle:
                 s2g = min(float(plan_gs[t]), s_gen_avail)
@@ -3609,6 +3818,7 @@ def _write_split_block(
         es_out[t] = solar_soc
         ew_out[t] = wind_soc
         total_supplied[t] = s2g + w2g + d_s + d_w
+        grid_import_settled[t] = imp_s_t + imp_w_t
 
     cs_to_soc = cs * eta_ch
     cw_to_soc = cw * eta_ch
@@ -3640,6 +3850,7 @@ def _write_split_block(
     df.loc[iloc_idx, "BESS_to_Grid_MWh"] = ds + dw
     df.loc[iloc_idx, "Total_Supplied_MWh"] = total_supplied
     df.loc[iloc_idx, "Curtailed_MWh"] = curtailed
+    df.loc[iloc_idx, "Grid_Import_MWh"] = grid_import_settled
     df.loc[iloc_idx, "Peak_Time_Energy_Supplied_MWh"] = np.where(
         peak == 1, total_supplied, 0.0
     )
@@ -3649,14 +3860,17 @@ def _write_split_block(
     df.loc[iloc_idx, "Penalty_MWh"] = penalty
 
     # Same cumulative throughput / cycle convention as `simulate_split_site`.
-    thr_s = cum_thr_s + float(np.sum(cs) + np.sum(ds) / max(eta_dis, 1e-9))
-    thr_w = cum_thr_w + float(np.sum(cw) + np.sum(dw) / max(eta_dis, 1e-9))
+    # AUDIT FIX (R4/M6) - per-hour cumulative cycles, not one block-end value.
+    thr_s_steps = float(cum_thr_s) + np.cumsum(cs + ds / max(eta_dis, 1e-9))
+    thr_w_steps = float(cum_thr_w) + np.cumsum(cw + dw / max(eta_dis, 1e-9))
     df.loc[iloc_idx, "solar_bess_total_cycles"] = (
-        thr_s / (2.0 * solar_cap_y) if solar_cap_y > 0 else 0.0
+        thr_s_steps / (2.0 * solar_cap_y) if solar_cap_y > 0 else 0.0
     )
     df.loc[iloc_idx, "wind_bess_total_cycles"] = (
-        thr_w / (2.0 * wind_cap_y) if wind_cap_y > 0 else 0.0
+        thr_w_steps / (2.0 * wind_cap_y) if wind_cap_y > 0 else 0.0
     )
+    thr_s = float(thr_s_steps[-1]) if n > 0 else float(cum_thr_s)
+    thr_w = float(thr_w_steps[-1]) if n > 0 else float(cum_thr_w)
 
     if n > 0:
         return float(es_out[-1]), float(ew_out[-1]), thr_s, thr_w
@@ -4232,7 +4446,7 @@ def main():
             "into the peak-hour contract shortfall. Fully deterministic and "
             "instant.\n\n"
             "**MILP rolling-horizon optimiser** — solves a mixed-integer / LP "
-            "dispatch problem over a rolling look-ahead horizon (default 48 h), "
+            "dispatch problem over a rolling look-ahead horizon (default 24 h), "
             "commits only the first step, then re-solves with the realised state "
             "of charge. Supports grid charging, time-of-use tariffs, cycle "
             "budgets, terminal SoC targets and self-discharge."
@@ -4261,13 +4475,14 @@ def main():
     
     st.sidebar.header("Plant & contract")
     solar_cap_mw = st.sidebar.number_input(
-        "Solar plant capacity (MWac)", value=281.0, step=1.0
+        "Solar plant capacity (MWac)", min_value=0.0, value=281.0, step=1.0
     )
     wind_cap_mw = st.sidebar.number_input(
-        "Wind plant capacity (MWac)", value=0.0, step=1.0
+        "Wind plant capacity (MWac)", min_value=0.0, value=0.0, step=1.0
     )
     contract_mw = st.sidebar.number_input(
         "Contract capacity (MW for penalty and peak demand)",
+        min_value=0.0,
         value=190.0,
         step=1.0,
     )
@@ -4309,26 +4524,26 @@ def main():
 
     if engine_mode == "single":
         bess_energy_mwh = st.sidebar.number_input(
-            "Single BESS energy (MWh)", value=600.0, step=10.0
+            "Single BESS energy (MWh)", min_value=0.0, value=600.0, step=10.0
         )
         pcs_power_mw = st.sidebar.number_input(
-            "Single BESS PCS power (MW)", value=200.0, step=10.0
+            "Single BESS PCS power (MW)", min_value=0.0, value=200.0, step=10.0
         )
         solar_bess_energy_mwh = solar_pcs_power_mw = 0.0
         wind_bess_energy_mwh = wind_pcs_power_mw = 0.0
     else:
         bess_energy_mwh = pcs_power_mw = 0.0
         solar_bess_energy_mwh = st.sidebar.number_input(
-            "Solar BESS energy (MWh)", value=160.0, step=10.0
+            "Solar BESS energy (MWh)", min_value=0.0, value=160.0, step=10.0
         )
         solar_pcs_power_mw = st.sidebar.number_input(
-            "Solar BESS PCS (MW)", value=160.0, step=10.0
+            "Solar BESS PCS (MW)", min_value=0.0, value=160.0, step=10.0
         )
         wind_bess_energy_mwh = st.sidebar.number_input(
-            "Wind BESS energy (MWh)", value=30.0, step=5.0
+            "Wind BESS energy (MWh)", min_value=0.0, value=30.0, step=5.0
         )
         wind_pcs_power_mw = st.sidebar.number_input(
-            "Wind BESS PCS (MW)", value=30.0, step=5.0
+            "Wind BESS PCS (MW)", min_value=0.0, value=30.0, step=5.0
         )
 
     st.sidebar.header("Battery & operating band")
@@ -4359,6 +4574,7 @@ def main():
     st.sidebar.header("Grid export limit")
     grid_limit_mw = st.sidebar.number_input(
         "Grid supply limit (MW). Use a large number for 'unlimited'; 0 means fully blocked.",
+        min_value=0.0,
         value=0.0,
         step=10.0,
     )
@@ -4516,8 +4732,11 @@ def main():
     scenario_source = "file"
 
     # Single-file build: if the upload is a plain P50 file, derive P75/P90
-    # here instead of requiring a pre-built scenario file.
-    if not scenario_map:
+    # here instead of requiring a pre-built scenario file. AUDIT FIX (R7) -
+    # P50-only files used to make `scenario_map` truthy and suppress the
+    # conversion, leaving only a P50 option.
+    _has_prebuilt_scenarios = any(level in scenario_map for level in (75, 90))
+    if not _has_prebuilt_scenarios:
         _has_basis = (
             "solar_MWh" in df_in.columns and "wind_MWh" in df_in.columns
         ) or ("solar_p50_MWh" in df_in.columns and "wind_p50_MWh" in df_in.columns)
